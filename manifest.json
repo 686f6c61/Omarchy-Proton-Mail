@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "id": "686f6c61.proton-mail",
+  "name": "Proton Mail",
+  "version": "1.0.0",
+  "author": "686f6c61",
+  "description": "Unread Proton Mail count in the bar, recent-mail dropdown and desktop notifications",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Proton Mail",
+    "description": "Unread Proton Mail count in the bar, recent-mail dropdown and desktop notifications",
+    "category": "Info",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "intervalSec": 5,
+      "notify": true,
+      "recentCount": "5",
+      "nickname": "",
+      "language": "en"
+    },
+    "schema": [
+      {
+        "key": "intervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 60,
+        "step": 1,
+        "defaultValue": 5
+      },
+      {
+        "key": "recentCount",
+        "type": "integer",
+        "label": "Recent messages in dropdown",
+        "min": 0,
+        "max": 20,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "How many recent messages to list when clicking the widget. 0 disables the dropdown (notifier only)."
+      },
+      {
+        "key": "nickname",
+        "type": "string",
+        "label": "Nickname",
+        "defaultValue": "",
+        "description": "Custom text for the header when there is no unread mail. Leave empty for the default."
+      },
+      {
+        "key": "language",
+        "type": "enum",
+        "label": "Language",
+        "options": [
+          "en",
+          "es",
+          "fr",
+          "de",
+          "it",
+          "zh"
+        ],
+        "defaultValue": "en",
+        "description": "Widget and notification language: English, Español, Français, Deutsch, Italiano, 中文."
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Desktop notifications",
+        "description": "Show a desktop notification when the unread count goes up.",
+        "defaultValue": true
+      }
+    ]
+  }
+}

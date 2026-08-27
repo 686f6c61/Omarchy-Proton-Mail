@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# omarchy-protonmail-unread - report Proton Mail unread count from Hyprland window titles
+#
+# Proton Mail shows unread mail in the page title as "(N) Inbox | ..." and a
+# Chromium webapp window exposes that title to Hyprland. This script reads
+# `hyprctl clients -j`, finds Proton Mail windows (webapp or regular browser
+# tab) and prints a single JSON line: {"unread":N,"open":true|false}
+#
+# Usage:
+#   omarchy-protonmail-unread          # live query via hyprctl
+#   omarchy-protonmail-unread --test   # read hyprctl clients JSON from stdin
+
+set -euo pipefail
+
+if [[ "${1:-}" == "--test" ]]; then
+  clients=$(cat)
+else
+  clients=$(hyprctl clients -j)
+fi
+
+jq -c '
+  [ .[] | select(
+      ((.class // "")        | ascii_downcase | contains("mail.proton")) or
+      ((.initialClass // "") | ascii_downcase | contains("mail.proton")) or
+      ((.title // "")        | ascii_downcase | contains("proton mail"))
+    ) ] as $w
+  | if ($w | length) == 0 then
+      { unread: 0, open: false }
+    else
+      { unread: ([ $w[].title // ""
+                   | capture("\\((?<n>[0-9]+)\\)")? .n
+                   | tonumber ] | max // 0),
+        open: true }
+    end
+' <<<"$clients"
