@@ -31,8 +31,11 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-            (DevTools protocol)      (on open / count change)
+        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
+        │   (DevTools protocol)      (on open / count change)
+        │
+        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► i link esterni si aprono
+            (DevTools protocol)      (finché la webapp è aperta)         nel browser predefinito
 ```
 
 - **Conteggio dei non letti**: Proton Mail lo inserisce nel titolo della
@@ -43,6 +46,11 @@ title: "(3) Inbox | … | Proton Mail"
   dedicato con una porta DevTools locale (`127.0.0.1:9229`). Il plugin legge
   le righe della posta in arrivo direttamente dalla pagina via CDP — Python
   solo con la libreria standard, nient'altro da installare.
+- **Link esterni**: i link cliccati dentro un messaggio si aprono nel browser
+  predefinito (il tuo profilo principale, con cookie e sessioni) invece che
+  nel profilo dedicato della webapp. `omarchy-protonmail-linkguard` sorveglia
+  le schede via CDP, apre quelle non-Proton con `xdg-open` e le chiude nella
+  webapp. Resta attivo solo mentre Proton Mail è aperto.
 
 ## Installazione
 
@@ -75,6 +83,11 @@ in modo separato dal tuo browser principale.
   (mittente, oggetto, orario; i non letti in grassetto). Clicca un messaggio
   per passare alla finestra di Proton Mail — quella esistente viene portata in
   primo piano, mai duplicata.
+- L'intestazione del menu mostra il logo di Proton Mail, e la riga in fondo
+  ha un interruttore **Metti in pausa le notifiche** che cambia
+  l'impostazione `notify` al volo.
+- I link cliccati dentro un messaggio si aprono nel **browser predefinito**
+  (profilo principale), non nel profilo dedicato della webapp.
 - Con `recentCount: "0"` il menu a discesa è disabilitato e il clic sinistro
   porta semplicemente in primo piano la finestra di Proton Mail (modalità
   notificatore puro).

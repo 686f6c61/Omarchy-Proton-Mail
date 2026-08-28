@@ -31,8 +31,11 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-            (DevTools protocol)      (on open / count change)
+        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
+        │   (DevTools protocol)      (on open / count change)
+        │
+        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► externe Links öffnen im
+            (DevTools protocol)      (solange die Webapp offen ist)      Standard-Browser
 ```
 
 - **Anzahl ungelesener Mails**: Proton Mail schreibt sie als `(N)` in den
@@ -43,6 +46,11 @@ title: "(3) Inbox | … | Proton Mail"
   Browser-Profil mit einem lokalen DevTools-Port (`127.0.0.1:9229`). Das
   Plugin liest die Posteingangszeilen direkt aus der Seite über CDP aus —
   Python nur mit Standardbibliothek, nichts weiter zu installieren.
+- **Externe Links**: In einer Nachricht angeklickte Links werden im
+  Standard-Browser geöffnet (Hauptprofil mit Cookies und Anmeldungen) statt
+  im dedizierten Profil der Webapp. `omarchy-protonmail-linkguard` überwacht
+  die Tabs über CDP, öffnet Nicht-Proton-Tabs mit `xdg-open` und schließt sie
+  in der Webapp. Läuft nur, solange Proton Mail geöffnet ist.
 
 ## Installation
 
@@ -78,6 +86,11 @@ anmeldest, unabhängig von deinem Hauptbrowser.
   (Absender, Betreff, Uhrzeit; ungelesene in Fettdruck). Klick auf eine
   Nachricht, um zum Proton-Mail-Fenster zu springen — das vorhandene Fenster
   wird fokussiert, nie dupliziert.
+- Die Dropdown-Kopfzeile zeigt das Proton-Mail-Logo, und die untere Zeile
+  enthält einen Schalter **Benachrichtigungen pausieren**, der die
+  Einstellung `notify` live umschaltet.
+- In einer Nachricht angeklickte Links öffnen im **Standard-Browser**
+  (Hauptprofil), nicht im dedizierten Profil der Webapp.
 - Mit `recentCount: "0"` ist das Dropdown deaktiviert und ein Linksklick
   fokussiert nur das Proton-Mail-Fenster (reiner Benachrichtigungsmodus).
 - **Rechts-/Mittelklick**: Jetzt aktualisieren.

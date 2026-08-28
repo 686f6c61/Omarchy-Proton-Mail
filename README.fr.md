@@ -32,8 +32,11 @@ titre : « (3) Inbox | … | Proton Mail »
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (titres de fenêtres)     (toutes les intervalSec)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► menu déroulant avec les N derniers messages
-            (protocole DevTools)        (à l'ouverture / changement du compteur)
+        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► menu déroulant avec les N derniers messages
+        │   (protocole DevTools)        (à l'ouverture / changement du compteur)
+        │
+        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► les liens externes s'ouvrent
+            (protocole DevTools)        (pendant que la webapp est ouverte)  dans le navigateur par défaut
 ```
 
 - **Nombre de non lus** : Proton Mail le met dans le titre de la page sous la
@@ -44,6 +47,12 @@ titre : « (3) Inbox | … | Proton Mail »
   navigateur dédié avec un port DevTools local (`127.0.0.1:9229`). Le plugin
   lit les lignes de la boîte de réception directement dans la page via CDP —
   Python avec la seule bibliothèque standard, rien d'autre à installer.
+- **Liens externes** : les liens cliqués dans un message s'ouvrent dans le
+  navigateur par défaut (votre profil principal, avec cookies et sessions) au
+  lieu du profil dédié de la webapp. `omarchy-protonmail-linkguard` surveille
+  les onglets via CDP, ouvre ceux qui ne sont pas de Proton avec `xdg-open` et
+  les ferme dans la webapp. Il ne tourne que pendant que Proton Mail est
+  ouvert.
 
 ## Installation
 
@@ -76,6 +85,11 @@ fois, indépendamment de votre navigateur principal.
   (expéditeur, objet, heure ; les non lus en gras). Cliquez sur un message
   pour basculer vers la fenêtre Proton Mail — la fenêtre existante reçoit le
   focus, jamais de doublon.
+- L'en-tête du menu affiche le logo Proton Mail, et la ligne du bas propose
+  un interrupteur **Mettre les notifications en pause** qui bascule le
+  réglage `notify` à chaud.
+- Les liens cliqués dans un message s'ouvrent dans votre **navigateur par
+  défaut** (profil principal), pas dans le profil dédié de la webapp.
 - Avec `recentCount: "0"`, le menu déroulant est désactivé et le clic gauche
   se contente de mettre le focus sur la fenêtre Proton Mail (mode notificateur
   pur).

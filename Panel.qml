@@ -10,7 +10,9 @@ import qs.Ui
 // unread count. Dropdown: polls omarchy-protonmail-recent (CDP against the
 // dedicated-profile webapp) for the last N messages; N=0 disables the
 // dropdown and turns the widget into a plain notifier whose click focuses
-// the Proton Mail window.
+// the Proton Mail window. While the webapp is open, the widget also spawns
+// omarchy-protonmail-linkguard so external links clicked inside a message
+// open in the default browser instead of the dedicated profile.
 Panel {
   id: root
   moduleName: "686f6c61.proton-mail"
@@ -37,7 +39,8 @@ Panel {
       noSubject: "(no subject)",
       noRecent: "No recent messages",
       openMail: "Open Proton Mail",
-      dedicatedOnly: "Messages are only read from the Proton Mail app (launcher)"
+      dedicatedOnly: "Messages are only read from the Proton Mail app (launcher)",
+      pauseNotifications: "Pause notifications"
     },
     es: {
       closed: "Proton Mail no está abierto",
@@ -51,7 +54,8 @@ Panel {
       noSubject: "(sin asunto)",
       noRecent: "Sin correos recientes",
       openMail: "Abrir Proton Mail",
-      dedicatedOnly: "Los mensajes solo se leen de la app Proton Mail (launcher)"
+      dedicatedOnly: "Los mensajes solo se leen de la app Proton Mail (launcher)",
+      pauseNotifications: "Pausar notificaciones"
     },
     fr: {
       closed: "Proton Mail n'est pas ouvert",
@@ -65,7 +69,8 @@ Panel {
       noSubject: "(sans objet)",
       noRecent: "Aucun message récent",
       openMail: "Ouvrir Proton Mail",
-      dedicatedOnly: "Les messages ne sont lus que depuis l'app Proton Mail (lanceur)"
+      dedicatedOnly: "Les messages ne sont lus que depuis l'app Proton Mail (lanceur)",
+      pauseNotifications: "Mettre les notifications en pause"
     },
     de: {
       closed: "Proton Mail ist nicht geöffnet",
@@ -79,7 +84,8 @@ Panel {
       noSubject: "(kein Betreff)",
       noRecent: "Keine aktuellen Nachrichten",
       openMail: "Proton Mail öffnen",
-      dedicatedOnly: "Nachrichten werden nur aus der Proton-Mail-App (Launcher) gelesen"
+      dedicatedOnly: "Nachrichten werden nur aus der Proton-Mail-App (Launcher) gelesen",
+      pauseNotifications: "Benachrichtigungen pausieren"
     },
     it: {
       closed: "Proton Mail non è aperto",
@@ -93,7 +99,8 @@ Panel {
       noSubject: "(nessun oggetto)",
       noRecent: "Nessun messaggio recente",
       openMail: "Apri Proton Mail",
-      dedicatedOnly: "I messaggi vengono letti solo dall'app Proton Mail (launcher)"
+      dedicatedOnly: "I messaggi vengono letti solo dall'app Proton Mail (launcher)",
+      pauseNotifications: "Metti in pausa le notifiche"
     },
     zh: {
       closed: "Proton Mail 未打开",
@@ -107,7 +114,8 @@ Panel {
       noSubject: "（无主题）",
       noRecent: "没有最近的邮件",
       openMail: "打开 Proton Mail",
-      dedicatedOnly: "只能从 Proton Mail 应用（启动器）读取邮件"
+      dedicatedOnly: "只能从 Proton Mail 应用（启动器）读取邮件",
+      pauseNotifications: "暂停通知"
     }
   })
 
@@ -132,6 +140,15 @@ Panel {
   property bool loggedIn: false
   property var messages: []
 
+  // Redirect external links clicked inside the webapp to the default browser.
+  // The guard self-exits when the CDP port goes away and ignores duplicate
+  // launches (flock), so spawning it on every open edge is safe.
+  onMailOpenChanged: {
+    if (mailOpen) {
+      Quickshell.execDetached([Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/omarchy-protonmail-linkguard"])
+    }
+  }
+
   function refresh() {
     if (!pollProc.running) pollProc.running = true
   }
@@ -150,6 +167,31 @@ Panel {
   readonly property string mailPattern: "mail.proton"
   readonly property string mailUrl: "https://mail.proton.me"
   readonly property string mailFlags: "--user-data-dir=" + Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/browser-profile --remote-debugging-port=9229"
+  // Proton Mail logo shown before the dropdown header; installed by install.sh.
+  readonly property string mailIconPath: Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/proton-mail.svg"
+
+  // shell.json stores settings as strings ("false"), so a plain boolean
+  // coercion would read "false" as enabled.
+  function notifyEnabled() {
+    var v = root.setting("notify", true)
+    return v === true || v === "true" || v === 1 || v === "1"
+  }
+
+  // Notifications paused = notify setting off. The switch at the bottom of the
+  // dropdown flips it live.
+  readonly property bool notificationsPaused: !notifyEnabled()
+
+  // Persist a setting the same way first-party panels do: update the local
+  // copy so the UI redraws on the click, then write shell.json through the
+  // shell so the change survives restarts.
+  function persistSetting(key, value) {
+    var entry = { id: root.moduleName }
+    for (var existing in root.settings) if (existing !== "id") entry[existing] = root.settings[existing]
+    entry[key] = value
+    root.settings = entry
+    if (root.bar && root.bar.shell && typeof root.bar.shell.updateEntryInline === "function")
+      root.bar.shell.updateEntryInline(root.moduleName, entry)
+  }
 
   function focusMail() {
     if (bar) bar.run("omarchy-launch-or-focus-webapp " + mailPattern + " " + mailUrl + " " + mailFlags)
@@ -167,7 +209,7 @@ Panel {
     root.unread = n
     root.mailOpen = !!s.open
     if (n !== prev) root.refreshRecent()
-    if (root.setting("notify", true) && root.haveSample && n > prev) {
+    if (root.notifyEnabled() && root.haveSample && n > prev) {
       Quickshell.execDetached(["omarchy-notification-send",
         "-g", "󰇮", "-r", "4242",
         "Proton Mail",
@@ -276,20 +318,39 @@ Panel {
           width: parent.width
           spacing: Style.space(2)
 
-          Text {
+          Row {
             width: parent.width
             leftPadding: Style.space(12)
             topPadding: Style.space(8)
             bottomPadding: Style.space(8)
-            text: !root.mailOpen
-              ? root.t("closed")
-              : (root.unread > 0
-                ? root.unreadText(root.unread)
-                : (root.nickname !== "" ? root.nickname : root.t("upToDate")))
-            color: root.foreground
-            opacity: 0.6
-            font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+            spacing: Style.space(8)
+
+            Image {
+              id: headerIcon
+              anchors.verticalCenter: parent.verticalCenter
+              width: Style.font.subtitle
+              height: Style.font.subtitle
+              source: "file://" + root.mailIconPath
+              sourceSize.width: width * 2
+              sourceSize.height: height * 2
+              visible: status === Image.Ready
+            }
+
+            Text {
+              width: parent.width - parent.leftPadding - parent.spacing
+                - (headerIcon.visible ? headerIcon.width : 0)
+              anchors.verticalCenter: parent.verticalCenter
+              text: !root.mailOpen
+                ? root.t("closed")
+                : (root.unread > 0
+                  ? root.unreadText(root.unread)
+                  : (root.nickname !== "" ? root.nickname : root.t("upToDate")))
+              color: root.foreground
+              opacity: 0.6
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall
+              elide: Text.ElideRight
+            }
           }
 
           Repeater {
@@ -373,6 +434,27 @@ Panel {
                 root.close()
               }
             }
+          }
+          // Breathing room between the last message row and the switch.
+          Item {
+            width: 1
+            height: Style.space(10)
+          }
+
+          Toggle {
+            width: column.width
+            opacity: 0.55
+            label: root.t("pauseNotifications")
+            checked: root.notificationsPaused
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            titleSize: Style.font.body
+            onClicked: root.persistSetting("notify", root.notificationsPaused)
+          }
+
+          Item {
+            width: 1
+            height: Style.space(6)
           }
         }
       }

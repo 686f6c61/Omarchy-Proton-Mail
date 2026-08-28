@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-08-28
+
+### Added
+
+- External links clicked inside the Proton Mail webapp now open in the default
+  browser (main profile, with your cookies and logins) instead of the webapp's
+  dedicated profile: `omarchy-protonmail-linkguard` watches the CDP target
+  list, forwards non-Proton tabs to `xdg-open` and closes them in the webapp.
+  The widget spawns the guard when Proton Mail is open; a file lock keeps a
+  single instance and the guard self-exits when the webapp closes.
+- Proton Mail logo (SVG, downloaded by the installer) in front of the dropdown
+  header text.
+- "Pause notifications" switch at the bottom of the dropdown: flips the
+  `notify` setting live and persists it to `shell.json`.
+
 ## [1.0.0] - 2026-08-27
 
 First public release.
@@ -53,4 +68,5 @@ UI, or inline in `~/.config/omarchy/shell.json`:
   live in a single dictionary in `Panel.qml`, easy to extend.
 - Documentation (`README`) available in all six languages.
 
+[1.1.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.0
 [1.0.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.0.0

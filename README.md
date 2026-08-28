@@ -30,8 +30,11 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-            (DevTools protocol)      (on open / count change)
+        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
+        │   (DevTools protocol)      (on open / count change)
+        │
+        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► external links open
+            (DevTools protocol)      (while the webapp is open)        in the default browser
 ```
 
 - **Unread count**: Proton Mail puts it in the page title as `(N)`, and
@@ -41,6 +44,11 @@ title: "(3) Inbox | … | Proton Mail"
   profile with a local DevTools port (`127.0.0.1:9229`). The plugin reads the
   inbox rows straight from the page over CDP — stdlib-only Python, nothing
   else to install.
+- **External links**: links clicked inside a message are forwarded to the
+  default browser (your main profile, with cookies and logins) instead of
+  opening in the webapp's dedicated profile. `omarchy-protonmail-linkguard`
+  watches the CDP target list, opens any non-Proton tab with `xdg-open` and
+  closes it in the webapp. It runs only while Proton Mail is open.
 
 ## Install
 
@@ -72,6 +80,10 @@ browser.
 - **Left-click the widget**: dropdown with the last N messages (sender,
   subject, time; unread ones in bold). Click a message to jump to the Proton
   Mail window — the existing one is focused, never duplicated.
+- The dropdown header shows the Proton Mail logo, and the bottom row has a
+  **Pause notifications** switch that flips the `notify` setting live.
+- Links clicked inside a message open in your **default browser** (main
+  profile), not in the webapp's dedicated profile.
 - With `recentCount: "0"` the dropdown is disabled and left-click just focuses
   the Proton Mail window (pure notifier mode).
 - **Right/middle-click**: refresh now.

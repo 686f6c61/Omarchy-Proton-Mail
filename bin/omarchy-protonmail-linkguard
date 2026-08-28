@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# omarchy-protonmail-linkguard - open external links in the default browser
+#
+# The Proton Mail webapp runs on a dedicated browser profile
+# (--user-data-dir + --remote-debugging-port=9229), so links clicked inside a
+# message would open in that profile — without the cookies and logins of the
+# user's main browser. This guard polls the CDP target list and, for every
+# page tab whose URL is not Proton's, opens the URL with the default browser
+# (xdg-open) and closes the tab in the webapp.
+#
+# A single instance runs at a time (flock). The guard exits when the CDP port
+# stops answering (webapp closed); the bar widget respawns it when Proton Mail
+# is open again.
+
+set -uo pipefail
+
+PORT="${1:-9229}"
+LOCK="${XDG_RUNTIME_DIR:-/tmp}/omarchy-protonmail-linkguard.lock"
+
+exec 9>"$LOCK"
+flock -n 9 || exit 0
+
+fails=0
+while true; do
+  targets=$(curl -fsS --max-time 2 "http://127.0.0.1:$PORT/json" 2>/dev/null) || {
+    fails=$((fails + 1))
+    # CDP down three times in a row -> webapp closed, exit.
+    ((fails >= 3)) && exit 0
+    sleep 1
+    continue
+  }
+  fails=0
+
+  while IFS=$'\t' read -r id url; do
+    [[ -z "$id" ]] && continue
+    xdg-open "$url" >/dev/null 2>&1 &
+    curl -fsS --max-time 2 "http://127.0.0.1:$PORT/json/close/$id" >/dev/null 2>&1 || true
+  done < <(jq -r '
+    .[] | select(.type == "page")
+      | select((.url // "") | test("^https?://"))
+      | select((.url | ascii_downcase
+                 | contains("proton.me") or contains("protonmail") or contains("protonvpn")) | not)
+      | "\(.id)\t\(.url)"' <<<"$targets")
+
+  sleep 0.7
+done

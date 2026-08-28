@@ -14,6 +14,8 @@ PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 SHELL_JSON="$HOME/.config/omarchy/shell.json"
 # Staged here; `omarchy webapp install` copies it into the hicolor icon dir.
 ICON_PATH="$DATA_DIR/proton-mail.png"
+# Proton Mail logo shown in the dropdown header.
+SVG_ICON_PATH="$DATA_DIR/proton-mail.svg"
 DESKTOP_FILE="$HOME/.local/share/applications/Proton Mail.desktop"
 
 # Preferences: --language <en|es|fr|de|it|zh> --nickname <text>
@@ -49,6 +51,13 @@ if [[ ! -s "$ICON_PATH" ]]; then
   fi
 fi
 
+if [[ ! -s "$SVG_ICON_PATH" ]]; then
+  echo "Downloading Proton Mail logo (SVG)..."
+  # Decorative only: if the download fails the widget just hides the image.
+  curl -fsSL --max-time 10 -o "$SVG_ICON_PATH" "https://cdn.simpleicons.org/protonmail/6D4AFF" ||
+    rm -f "$SVG_ICON_PATH"
+fi
+
 # --- 2. Webapp launcher -------------------------------------------------------
 # Dedicated browser profile + CDP port so the recent-messages dropdown can
 # read the inbox via the DevTools protocol without touching the user's main
@@ -64,6 +73,7 @@ fi
 # --- 3. Counter scripts ---------------------------------------------------------
 install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-unread" "$DATA_DIR/omarchy-protonmail-unread"
 install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-recent" "$DATA_DIR/omarchy-protonmail-recent"
+install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-linkguard" "$DATA_DIR/omarchy-protonmail-linkguard"
 echo "Installed counter scripts to $DATA_DIR/"
 
 # --- 4. Shell plugin -----------------------------------------------------------

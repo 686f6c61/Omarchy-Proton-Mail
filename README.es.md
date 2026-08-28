@@ -32,8 +32,11 @@ título: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notificación
         │   (títulos de ventana)   (cada intervalSec)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► desplegable con los últimos N
-            (protocolo DevTools)     (al abrir / cambiar el contador)
+        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► desplegable con los últimos N
+        │   (protocolo DevTools)     (al abrir / cambiar el contador)
+        │
+        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► los enlaces externos se
+            (protocolo DevTools)     (mientras la webapp está abierta)   abren en el navegador por defecto
 ```
 
 - **Número de no leídos**: Proton Mail lo pone en el título de la página como
@@ -44,6 +47,11 @@ título: "(3) Inbox | … | Proton Mail"
   dedicado con un puerto DevTools local (`127.0.0.1:9229`). El plugin lee las
   filas de la bandeja directamente de la página por CDP — Python solo con la
   librería estándar, nada más que instalar.
+- **Enlaces externos**: los enlaces pulsados dentro de un mensaje se abren en
+  el navegador por defecto (tu perfil principal, con cookies y sesiones) en
+  lugar del perfil dedicado de la webapp. `omarchy-protonmail-linkguard`
+  vigila las pestañas vía CDP, abre las que no son de Proton con `xdg-open` y
+  las cierra en la webapp. Solo corre mientras Proton Mail está abierto.
 
 ## Instalación
 
@@ -77,6 +85,11 @@ forma independiente a tu navegador principal.
   (remitente, asunto, hora; los no leídos en negrita). Clic en un mensaje
   para saltar a la ventana de Proton Mail — se enfoca la existente, nunca se
   duplica.
+- La cabecera del desplegable muestra el logo de Proton Mail, y la fila
+  inferior tiene un interruptor de **Pausar notificaciones** que cambia el
+  ajuste `notify` en vivo.
+- Los enlaces pulsados dentro de un mensaje se abren en tu **navegador por
+  defecto** (perfil principal), no en el perfil dedicado de la webapp.
 - Con `recentCount: 0` el desplegable se desactiva y el clic izquierdo solo
   enfoca la ventana de Proton Mail (modo avisador puro).
 - **Clic derecho/central**: refrescar ahora.

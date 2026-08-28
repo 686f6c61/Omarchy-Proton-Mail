@@ -23,8 +23,11 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-            (DevTools protocol)      (on open / count change)
+        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
+        │   (DevTools protocol)      (on open / count change)
+        │
+        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► 外部链接在默认浏览器中打开
+            (DevTools protocol)      (webapp 打开期间运行)
 ```
 
 - **未读数量**：Proton Mail 会把它以 `(N)` 的形式放进页面标题，而
@@ -33,6 +36,11 @@ title: "(3) Inbox | … | Proton Mail"
 - **最近邮件**：安装好的 webapp 运行在独立的浏览器配置中，并带有本地
   DevTools 端口（`127.0.0.1:9229`）。插件通过 CDP 直接从页面读取收件箱
   行 —— 只使用 Python 标准库，无需安装其他任何东西。
+- **外部链接**：在邮件中点击的链接会在默认浏览器（你的主配置，带有
+  cookie 和登录会话）中打开，而不是在 webapp 的独立配置中。
+  `omarchy-protonmail-linkguard` 通过 CDP 监视标签页，用 `xdg-open`
+  打开非 Proton 的标签页并在 webapp 中将其关闭。仅在 Proton Mail
+  打开时运行。
 
 ## 安装
 
@@ -62,6 +70,10 @@ cd Omarchy-Proton-Mail
 - **左键点击小部件**：下拉显示最近 N 封邮件（发件人、主题、时间；
   未读邮件加粗显示）。点击某封邮件即可跳转到 Proton Mail 窗口 —— 会聚焦
   已有的窗口，绝不重复打开。
+- 下拉列表顶部显示 Proton Mail 标志，底部有一个**暂停通知**开关，
+  可实时切换 `notify` 设置。
+- 在邮件中点击的链接会在你的**默认浏览器**（主配置）中打开，而不是
+  webapp 的独立配置。
 - 当 `recentCount: "0"` 时，下拉列表被禁用，左键点击仅聚焦
   Proton Mail 窗口（纯通知模式）。
 - **右键/中键点击**：立即刷新。
