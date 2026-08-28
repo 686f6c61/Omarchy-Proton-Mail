@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.2] - 2026-08-28
+
+Rework of the DevTools access after the second marketplace review round: a
+random port is still an unauthenticated port, so the debug endpoint is gone
+entirely.
+
+### Security
+
+- **No TCP debug port at all.** The webapp now launches with
+  `--remote-debugging-pipe`: the browser speaks CDP over file descriptors
+  inherited from its launcher, so no process — not even one running as the
+  same user — can connect to the authenticated mailbox session.
+- New `omarchy-protonmail-broker`: the sole CDP client. It launches the
+  browser, serves a narrowly scoped API on a unix socket
+  (`recent` truncated metadata only; per-client `SO_PEERCRED` uid check) and
+  forwards external tabs to the default browser itself.
+- `omarchy-protonmail-recent` is now a thin broker client with the same
+  output contract; `omarchy-protonmail-linkguard` was removed (its job lives
+  in the broker's sweep).
+- The launcher, widget and notification now focus-or-launch through
+  `omarchy-protonmail-focus-or-launch`.
+
+### Fixed
+
+- Window focusing on newer Hyprland versions that dispatch through
+  `hl.dsp.focus(...)` (legacy `focuswindow address:` syntax is kept as a
+  fallback).
+
 ## [1.1.1] - 2026-08-28
 
 Security hardening after the Omarchy marketplace review.
@@ -90,6 +118,7 @@ UI, or inline in `~/.config/omarchy/shell.json`:
   live in a single dictionary in `Panel.qml`, easy to extend.
 - Documentation (`README`) available in all six languages.
 
+[1.1.2]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.2
 [1.1.1]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.1
 [1.1.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.0
 [1.0.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.0.0

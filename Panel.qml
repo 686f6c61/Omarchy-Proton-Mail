@@ -7,12 +7,12 @@ import qs.Ui
 // Proton Mail unread-count widget with a dropdown of recent messages.
 //
 // Badge: polls omarchy-protonmail-unread (hyprctl window titles) for the
-// unread count. Dropdown: polls omarchy-protonmail-recent (CDP against the
-// dedicated-profile webapp) for the last N messages; N=0 disables the
-// dropdown and turns the widget into a plain notifier whose click focuses
-// the Proton Mail window. While the webapp is open, the widget also spawns
-// omarchy-protonmail-linkguard so external links clicked inside a message
-// open in the default browser instead of the dedicated profile.
+// unread count. Dropdown: polls omarchy-protonmail-recent, a thin client of
+// omarchy-protonmail-broker — the broker is the only CDP client and reaches
+// the webapp over --remote-debugging-pipe (inherited fds, no TCP port), so
+// the authenticated mailbox session exposes no debug endpoint at all.
+// recentCount=0 disables the dropdown and turns the widget into a plain
+// notifier whose click focuses the Proton Mail window.
 Panel {
   id: root
   moduleName: "686f6c61.proton-mail"
@@ -140,15 +140,6 @@ Panel {
   property bool loggedIn: false
   property var messages: []
 
-  // Redirect external links clicked inside the webapp to the default browser.
-  // The guard self-exits when the CDP port goes away and ignores duplicate
-  // launches (flock), so spawning it on every open edge is safe.
-  onMailOpenChanged: {
-    if (mailOpen) {
-      Quickshell.execDetached([Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/omarchy-protonmail-linkguard"])
-    }
-  }
-
   function refresh() {
     if (!pollProc.running) pollProc.running = true
   }
@@ -157,18 +148,9 @@ Panel {
     if (recentCount > 0 && mailOpen && !recentProc.running) recentProc.running = true
   }
 
-  // Launch flags that keep the webapp on its dedicated profile with an
-  // ephemeral CDP port (--remote-debugging-port=0: Chromium picks a random
-  // free port and records it in DevToolsActivePort inside the 0700 profile
-  // dir) — without them a re-launch would open a window in the user's main
-  // browser profile and the recent-messages dropdown would go blind.
-  // NOTE: the window pattern must not end at "me": omarchy-launch-or-focus
-  // wraps it in \b…\b and the window class continues with "_…-Default", where
-  // "_" is a word character, so "\bme\b" would never match and every click
-  // would spawn a new window.
-  readonly property string mailPattern: "mail.proton"
-  readonly property string mailUrl: "https://mail.proton.me"
-  readonly property string mailFlags: "--user-data-dir=" + Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/browser-profile --remote-debugging-port=0"
+  // Focus the existing Proton Mail window (any workspace) or launch the
+  // webapp through the broker, which keeps the DevTools pipe to itself.
+  readonly property string focusScript: Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/omarchy-protonmail-focus-or-launch"
   // Proton Mail logo shown before the dropdown header; installed by install.sh.
   readonly property string mailIconPath: Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/proton-mail.svg"
 
@@ -196,7 +178,7 @@ Panel {
   }
 
   function focusMail() {
-    if (bar) bar.run("omarchy-launch-or-focus-webapp " + mailPattern + " " + mailUrl + " " + mailFlags)
+    if (bar) bar.run(root.focusScript)
   }
 
   function applyState(raw) {
@@ -216,9 +198,7 @@ Panel {
         "-g", "󰇮", "-r", "4242",
         "Proton Mail",
         root.unreadText(n),
-        "--exec", "omarchy-launch-or-focus-webapp", root.mailPattern, root.mailUrl,
-        "--user-data-dir=" + Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/browser-profile",
-        "--remote-debugging-port=0"])
+        "--exec", root.focusScript])
     }
     root.haveSample = true
   }

@@ -42,23 +42,28 @@ install -m 644 "$PROJECT_DIR/assets/proton-mail.png" "$ICON_PATH"
 install -m 644 "$PROJECT_DIR/assets/proton-mail.svg" "$SVG_ICON_PATH"
 
 # --- 2. Webapp launcher -------------------------------------------------------
-# Dedicated browser profile + ephemeral CDP port (--remote-debugging-port=0:
-# Chromium picks a random free port and records it in DevToolsActivePort
-# inside the 0700 profile dir) so the recent-messages dropdown can read the
-# inbox via the DevTools protocol without touching the user's main browser
-# profile — and without a fixed, predictable debug port.
-CUSTOM_EXEC="omarchy-launch-webapp https://mail.proton.me --user-data-dir=$DATA_DIR/browser-profile --remote-debugging-port=0"
-if [[ -f "$DESKTOP_FILE" ]] && grep -qF -- "--remote-debugging-port=0" "$DESKTOP_FILE"; then
+# The desktop entry launches through omarchy-protonmail-focus-or-launch, which
+# focuses the existing window or spawns omarchy-protonmail-broker. The broker
+# launches the browser with --remote-debugging-pipe and stays the only CDP
+# client (inherited fds, no TCP debug port), serving a narrow local API for
+# the recent-messages dropdown and forwarding external links to the default
+# browser.
+CUSTOM_EXEC="$DATA_DIR/omarchy-protonmail-focus-or-launch"
+if [[ -f "$DESKTOP_FILE" ]] && grep -qF -- "omarchy-protonmail-focus-or-launch" "$DESKTOP_FILE"; then
   echo "Webapp 'Proton Mail' already up to date, skipping."
 else
-  echo "Creating 'Proton Mail' webapp (dedicated profile + CDP)..."
+  echo "Creating 'Proton Mail' webapp (brokered launch, no debug port)..."
   omarchy webapp install "Proton Mail" "https://mail.proton.me" "$ICON_PATH" "$CUSTOM_EXEC"
 fi
 
-# --- 3. Counter scripts ---------------------------------------------------------
+# --- 3. Helper scripts ---------------------------------------------------------
 install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-unread" "$DATA_DIR/omarchy-protonmail-unread"
 install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-recent" "$DATA_DIR/omarchy-protonmail-recent"
-install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-linkguard" "$DATA_DIR/omarchy-protonmail-linkguard"
+install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-broker" "$DATA_DIR/omarchy-protonmail-broker"
+install -m 755 "$PROJECT_DIR/bin/omarchy-protonmail-focus-or-launch" "$DATA_DIR/omarchy-protonmail-focus-or-launch"
+# Removed in 1.1.2: the linkguard's job now lives inside the broker.
+rm -f "$DATA_DIR/omarchy-protonmail-linkguard"
+pkill -f omarchy-protonmail-linkguard 2>/dev/null || true
 echo "Installed counter scripts to $DATA_DIR/"
 
 # --- 4. Shell plugin -----------------------------------------------------------

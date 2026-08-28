@@ -1,330 +1,66 @@
 #!/usr/bin/env python3
-"""omarchy-protonmail-recent - list recent Proton Mail messages via CDP.
+"""omarchy-protonmail-recent - list recent Proton Mail messages.
 
-Talks to the dedicated-profile Proton Mail webapp over the Chrome DevTools
-Protocol and extracts the most recent inbox rows (sender, subject, time,
-unread) from the DOM. The webapp is launched with --remote-debugging-port=0,
-so Chromium picks a random ephemeral port and records it in the
-DevToolsActivePort file inside the profile directory (0700) — there is no
-fixed, predictable port to attack.
-
-Stdlib only: ships a minimal WebSocket client because CDP evaluate requires
-WS while target discovery is plain HTTP. The client only dials exact IPv4/IPv6
-loopback hosts and applies hard frame/message size caps before allocating.
+Thin client of omarchy-protonmail-broker: the broker owns the only CDP
+channel (pipe fds, no TCP port) and serves truncated recent-message metadata
+on a unix socket. This script just relays one request so the bar widget keeps
+a simple process interface.
 
 Usage:
-  omarchy-protonmail-recent [--limit N] [--port P]   # --port overrides discovery (testing)
-  omarchy-protonmail-recent --dump          # diagnostic DOM dump for tuning
+  omarchy-protonmail-recent [--limit N]
 
 Output: one JSON line
-  {"open": true,  "loggedIn": true,  "messages": [{"sender": ..., "subject": ..., "time": ..., "unread": ...}, ...]}
+  {"open": true,  "loggedIn": true,  "messages": [...]}
   {"open": false, "loggedIn": false, "messages": []}
 """
 
-import base64
 import json
 import os
 import socket
-import struct
 import sys
-import urllib.request
 
-DATA_DIR = os.path.expanduser("~/.local/share/omarchy-protonmail")
-# Written by Chromium next to the profile when remote debugging is enabled.
-# The profile directory is 0700, so only this user can learn the port.
-DEVTOOLS_PORT_FILE = os.path.join(DATA_DIR, "browser-profile", "DevToolsActivePort")
+SOCK_PATH = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
+    "omarchy-protonmail", "broker.sock")
 
-LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
-# Hard caps, checked before any allocation or accumulation: a malicious or
-# confused peer cannot make us reserve unbounded memory.
-MAX_FRAME_BYTES = 1 << 20   # 1 MiB per WebSocket frame
-MAX_MESSAGE_BYTES = 4 << 20  # 4 MiB per reassembled message
-HTTP_TIMEOUT = 3
-WS_TIMEOUT = 5
-EVAL_TIMEOUT = 8
+MAX_RESPONSE = 4 << 20  # cap before accumulating the broker's reply
 
-# JS evaluated in the Proton Mail page. Returns {loggedIn, rows:[...]} with
-# structured fields taken from Proton's data-testid hooks (verified against
-# the live DOM), plus raw text as a fallback for Python-side parsing.
-EXTRACT_JS = r"""
-(() => {
-  const out = { loggedIn: false, rows: [] };
-  // The message list lives behind Proton's item containers. Try several
-  // selector candidates; keep the first that yields rows.
-  const candidates = [
-    '[data-testid^="message-item"]',
-    '[data-testid^="conversation-item"]',
-    'div.item-container[data-shortcut-target]',
-    '.item-container'
-  ];
-  let nodes = [];
-  for (const sel of candidates) {
-    nodes = Array.from(document.querySelectorAll(sel));
-    if (nodes.length) break;
-  }
-  if (!nodes.length) return out;
-  out.loggedIn = true;
-  const pick = (n, sel) => {
-    const el = n.querySelector(sel);
-    return el ? (el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
-  };
-  // For dates prefer the short visible text ("18:25") over the long title.
-  const pickText = (n, sel) => {
-    const el = n.querySelector(sel);
-    return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
-  };
-  out.rows = nodes.slice(0, %d).map(n => ({
-    sender: pick(n, '[data-testid="message-column:sender-address"]'),
-    subject: pick(n, '[data-testid="message-column:subject"]'),
-    time: pickText(n, 'time[data-testid="item-date-simple"]'),
-    unread: n.classList.contains('unread'),
-    // fallback payload if the structured selectors ever go stale
-    text: (n.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300)
-  }));
-  return out;
-})()
-"""
-
-DUMP_JS = r"""
-(() => {
-  const sels = ['[data-testid^="message-item"]', '[data-testid^="conversation-item"]',
-                'div.item-container[data-shortcut-target]', '.item-container'];
-  const found = {};
-  for (const sel of sels) {
-    const nodes = document.querySelectorAll(sel);
-    if (nodes.length) {
-      found[sel] = {
-        count: nodes.length,
-        firstAria: nodes[0].getAttribute('aria-label') || '',
-        firstText: (nodes[0].innerText || '').slice(0, 400),
-        firstHtml: nodes[0].outerHTML.slice(0, 2000)
-      };
-    }
-  }
-  return { url: location.href, title: document.title, found };
-})()
-"""
-
-
-class WsError(Exception):
-    pass
-
-
-class MiniWS:
-    """Minimal RFC6455 client: text frames, masking, ping/pong, fragments."""
-
-    def __init__(self, url, timeout=WS_TIMEOUT):
-        assert url.startswith("ws://")
-        rest = url[5:]
-        hostport, _, path = rest.partition("/")
-        host, _, port = hostport.partition(":")
-        # Only ever dial exact loopback: the ws URL comes from the local CDP
-        # endpoint, but never trust it blindly.
-        if host not in LOOPBACK_HOSTS:
-            raise WsError("refusing non-loopback WebSocket host: " + host)
-        if not (0 < int(port or 80) < 65536):
-            raise WsError("invalid port")
-        self.sock = socket.create_connection((host, int(port or 80)), timeout=timeout)
-        self.sock.settimeout(timeout)
-        key = base64.b64encode(os.urandom(16)).decode()
-        req = (
-            f"GET /{path} HTTP/1.1\r\nHost: {hostport}\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            f"Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n"
-        )
-        self.sock.sendall(req.encode())
-        resp = self._read_until(b"\r\n\r\n")
-        if b" 101" not in resp.split(b"\r\n", 1)[0]:
-            raise WsError("handshake failed: " + resp.decode(errors="replace")[:200])
-
-    def _read_until(self, marker):
-        buf = b""
-        while marker not in buf:
-            chunk = self.sock.recv(4096)
-            if not chunk:
-                raise WsError("connection closed")
-            buf += chunk
-        head, _, rest = buf.partition(marker)
-        self._leftover = rest
-        return head
-
-    def _recv_exact(self, n):
-        buf = getattr(self, "_leftover", b"")
-        self._leftover = b""
-        while len(buf) < n:
-            chunk = self.sock.recv(n - len(buf))
-            if not chunk:
-                raise WsError("connection closed")
-            buf += chunk
-        if len(buf) > n:
-            self._leftover = buf[n:]
-        return buf[:n]
-
-    def send_text(self, payload):
-        data = payload.encode()
-        header = bytearray([0x81])
-        n = len(data)
-        if n < 126:
-            header.append(0x80 | n)
-        elif n <= 0xFFFF:
-            header.append(0x80 | 126)
-            header += struct.pack(">H", n)
-        else:
-            header.append(0x80 | 127)
-            header += struct.pack(">Q", n)
-        mask = os.urandom(4)
-        header += mask
-        masked = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
-        self.sock.sendall(bytes(header) + masked)
-
-    def recv_message(self):
-        parts = []
-        while True:
-            b1, b2 = self._recv_exact(2)
-            fin = b1 & 0x80
-            opcode = b1 & 0x0F
-            masked = b2 & 0x80
-            length = b2 & 0x7F
-            if length == 126:
-                length = struct.unpack(">H", self._recv_exact(2))[0]
-            elif length == 127:
-                length = struct.unpack(">Q", self._recv_exact(8))[0]
-            # Cap before allocating: the length field is attacker-controlled.
-            if length > MAX_FRAME_BYTES:
-                raise WsError("frame too large")
-            mask = self._recv_exact(4) if masked else None
-            payload = bytearray(self._recv_exact(length))
-            if mask:
-                for i in range(length):
-                    payload[i] ^= mask[i % 4]
-            if opcode == 0x9:  # ping -> pong
-                self.sock.sendall(bytes([0x8A, 0x80]) + os.urandom(4))
-                continue
-            if opcode == 0x8:
-                raise WsError("closed by peer")
-            parts.append(bytes(payload))
-            if sum(len(p) for p in parts) > MAX_MESSAGE_BYTES:
-                raise WsError("message too large")
-            if fin:
-                return b"".join(parts).decode(errors="replace")
-
-    def close(self):
-        try:
-            self.sock.close()
-        except OSError:
-            pass
-
-
-def cdp_evaluate(ws_url, expression, timeout=EVAL_TIMEOUT):
-    ws = MiniWS(ws_url, timeout=timeout)
-    try:
-        ws.send_text(json.dumps({
-            "id": 1,
-            "method": "Runtime.evaluate",
-            "params": {"expression": expression, "returnByValue": True},
-        }))
-        while True:
-            msg = json.loads(ws.recv_message())
-            if msg.get("id") == 1:
-                return msg.get("result", {}).get("result", {}).get("value")
-    finally:
-        ws.close()
-
-
-def discover_port():
-    """Ephemeral CDP port chosen by Chromium (--remote-debugging-port=0),
-    read from the DevToolsActivePort file inside the 0700 profile dir."""
-    try:
-        with open(DEVTOOLS_PORT_FILE) as f:
-            port = int(f.readline().strip())
-        if 0 < port < 65536:
-            return port
-    except (OSError, ValueError):
-        pass
-    return None
-
-
-def find_page_target(port):
-    try:
-        with urllib.request.urlopen(
-            f"http://127.0.0.1:{port}/json", timeout=HTTP_TIMEOUT
-        ) as r:
-            targets = json.load(r)
-    except (OSError, json.JSONDecodeError):
-        return None
-    for t in targets:
-        if t.get("type") == "page" and "proton" in (t.get("url") or ""):
-            return t
-    return None
-
-
-def parse_row(row):
-    """Structured fields from the DOM selectors, with an innerText fallback.
-
-    innerText of a row looks like "Sender\nHH:MM\n<long date>\nSubject"
-    (order verified against the live DOM); used only if the data-testid
-    selectors go stale in a future Proton release.
-    """
-    sender = (row.get("sender") or "").strip()
-    subject = (row.get("subject") or "").strip()
-    time = (row.get("time") or "").strip()
-    if not (sender or subject):
-        lines = [l.strip() for l in (row.get("text") or "").split("\n") if l.strip()]
-        # text arrives with newlines collapsed to spaces; fall back to the
-        # whole string as subject if we cannot split it reliably
-        if lines:
-            subject = " ".join(lines)[:160]
-    return {
-        "sender": sender[:80],
-        "subject": subject[:160],
-        "time": time[:40],
-        "unread": bool(row.get("unread")),
-    }
+EMPTY = {"open": False, "loggedIn": False, "messages": []}
 
 
 def main():
-    args = sys.argv[1:]
-    dump = "--dump" in args
     limit = 7
+    args = sys.argv[1:]
     if "--limit" in args:
-        limit = int(args[args.index("--limit") + 1])
-    # --port overrides discovery for testing against other instances.
-    port = None
-    if "--port" in args:
-        port = int(args[args.index("--port") + 1])
-    if port is None:
-        port = discover_port()
+        try:
+            limit = int(args[args.index("--limit") + 1])
+        except (ValueError, IndexError):
+            pass
 
-    empty = {"open": False, "loggedIn": False, "messages": []}
-    if port is None:
-        print(json.dumps(empty))
-        return 0
-    target = find_page_target(port)
-    if not target:
-        print(json.dumps(empty))
-        return 0
-
-    js = DUMP_JS if dump else (EXTRACT_JS % limit)
     try:
-        value = cdp_evaluate(target["webSocketDebuggerUrl"], js)
-    except (WsError, OSError, json.JSONDecodeError) as e:
-        if dump:
-            print(json.dumps({"error": str(e)}))
-        else:
-            print(json.dumps(empty))
-        return 0
-
-    if dump:
-        print(json.dumps(value, indent=2, ensure_ascii=False))
-        return 0
-
-    value = value or {}
-    rows = value.get("rows") or []
-    print(json.dumps({
-        "open": True,
-        "loggedIn": bool(value.get("loggedIn")),
-        "messages": [parse_row(r) for r in rows],
-    }, ensure_ascii=False))
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        # The broker answers from a worker thread; the browser may legitimately
+        # take several seconds under load, so be patient.
+        sock.settimeout(15)
+        sock.connect(SOCK_PATH)
+        sock.sendall(json.dumps({"method": "recent", "limit": limit}).encode() + b"\n")
+        data = b""
+        while b"\n" not in data and len(data) <= MAX_RESPONSE:
+            chunk = sock.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        sock.close()
+        line = data.split(b"\n", 1)[0]
+        parsed = json.loads(line)
+        # Never relay anything unexpected from the socket.
+        print(json.dumps({
+            "open": bool(parsed.get("open")),
+            "loggedIn": bool(parsed.get("loggedIn")),
+            "messages": parsed.get("messages") or [],
+        }, ensure_ascii=False))
+    except (OSError, json.JSONDecodeError, AttributeError):
+        print(json.dumps(EMPTY))
     return 0
 
 

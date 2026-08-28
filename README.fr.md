@@ -32,28 +32,27 @@ titre : « (3) Inbox | … | Proton Mail »
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (titres de fenêtres)     (toutes les intervalSec)
         │
-        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► menu déroulant avec les N derniers messages
-        │   (protocole DevTools)        (à l'ouverture / changement du compteur)
-        │
-        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► les liens externes s'ouvrent
-            (protocole DevTools)        (pendant que la webapp est ouverte)  dans le navigateur par défaut
+        └─ --remote-debugging-pipe ──► omarchy-protonmail-broker ──► menu déroulant avec
+            (CDP sur fds 3/4 hérités,             (seul client CDP, API     les N derniers messages +
+             aucun port TCP de débogage)           socket unix + balayage)  liens externes au navigateur par défaut
 ```
 
 - **Nombre de non lus** : Proton Mail le met dans le titre de la page sous la
   forme `(N)`, et Hyprland expose les titres de fenêtres via `hyprctl clients
   -j`. Fonctionne avec la fenêtre de la webapp *et* avec tout onglet classique
   du navigateur affichant Proton Mail.
-- **Messages récents** : la webapp installée tourne dans un profil de
-  navigateur dédié avec un port DevTools éphémère (`--remote-debugging-port=0`,
-  consigné dans `DevToolsActivePort`). Le plugin
-  lit les lignes de la boîte de réception directement dans la page via CDP —
-  Python avec la seule bibliothèque standard, rien d'autre à installer.
-- **Liens externes** : les liens cliqués dans un message s'ouvrent dans le
-  navigateur par défaut (votre profil principal, avec cookies et sessions) au
-  lieu du profil dédié de la webapp. `omarchy-protonmail-linkguard` surveille
-  les onglets via CDP, ouvre ceux qui ne sont pas de Proton avec `xdg-open` et
-  les ferme dans la webapp. Il ne tourne que pendant que Proton Mail est
-  ouvert.
+- **Messages récents** : la webapp est lancée via
+  `omarchy-protonmail-broker` avec `--remote-debugging-pipe`, donc le
+  navigateur parle CDP sur des descripteurs de fichiers hérités du broker —
+  il n'y a aucun port TCP de débogage, fixe ou aléatoire, auquel d'autres
+  processus pourraient se connecter. Le broker sert les lignes de la boîte
+  de réception (tronquées) sur un socket unix (authentifié par SO_PEERCRED)
+  à `omarchy-protonmail-recent` — Python avec la seule bibliothèque
+  standard, rien d'autre à installer.
+- **Liens externes** : le broker balaie aussi la liste des onglets et ouvre
+  dans le navigateur par défaut (votre profil principal, avec cookies et
+  sessions) tout onglet dont l'hôte n'est pas dans la liste exacte des
+  domaines Proton, puis le ferme dans la webapp.
 
 ## Installation
 

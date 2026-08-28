@@ -1,0 +1,485 @@
+#!/usr/bin/env python3
+"""omarchy-protonmail-broker - sole CDP client for the Proton Mail webapp.
+
+Launches the dedicated-profile Proton Mail webapp with
+--remote-debugging-pipe: the browser speaks the DevTools protocol over file
+descriptors 3/4 inherited from this process. There is NO TCP debug port -
+fixed or random - so no other process (even running as the same user) can
+reach the authenticated mailbox session.
+
+The broker exposes a narrowly scoped local API on a unix socket
+($XDG_RUNTIME_DIR/omarchy-protonmail/broker.sock, newline-delimited JSON):
+
+  {"method": "recent", "limit": N}  -> truncated recent-message metadata
+  {"method": "selftest"}            -> opens https://example.org so the
+                                       external-tab sweep can be observed
+
+Clients are authenticated with SO_PEERCRED (peer uid must equal the broker's
+euid). The API cannot execute JavaScript or read anything beyond the truncated
+metadata above; the dangerous capability (CDP) never leaves this process.
+
+The broker also sweeps the target list ~1.4s and forwards any page tab whose
+host is outside the exact Proton allowlist to the default browser (xdg-open),
+closing it in the webapp (replaces the old linkguard).
+
+Stdlib only. Exits when the browser dies or on SIGTERM, removing the socket.
+"""
+
+import json
+import os
+import queue
+import select
+import signal
+import socket
+import struct
+import subprocess
+import sys
+import threading
+import time
+import urllib.parse
+
+DATA_DIR = os.path.expanduser("~/.local/share/omarchy-protonmail")
+PROFILE_DIR = os.path.join(DATA_DIR, "browser-profile")
+RUNTIME_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "omarchy-protonmail")
+SOCK_PATH = os.path.join(RUNTIME_DIR, "broker.sock")
+LOCK_PATH = os.path.join(RUNTIME_DIR, "broker.lock")
+
+MAIL_URL = "https://mail.proton.me"
+PROTON_DOMAINS = ("proton.me", "protonmail.com", "protonvpn.com")
+
+MAX_PIPE_MSG = 4 << 20      # 4 MiB cap per CDP pipe message, before allocation
+MAX_CLIENT_MSG = 16 << 10   # 16 KiB cap per API request
+SWEEP_INTERVAL = 0.7
+CDP_TIMEOUT = 8
+# How long a client may wait for an answer. The browser occasionally stalls
+# CDP replies for seconds under load (heavy SPA main thread), so the API
+# budget is generous; a stalled call still fails at CDP_TIMEOUT and the
+# client gets a graceful empty answer.
+REQUEST_TIMEOUT = 15
+
+# Same DOM extraction the old recent script used, verified against the live
+# Proton DOM; fields are truncated again on this side before leaving.
+EXTRACT_JS = r"""
+(() => {
+  const out = { loggedIn: false, rows: [] };
+  const candidates = [
+    '[data-testid^="message-item"]',
+    '[data-testid^="conversation-item"]',
+    'div.item-container[data-shortcut-target]',
+    '.item-container'
+  ];
+  let nodes = [];
+  for (const sel of candidates) {
+    nodes = Array.from(document.querySelectorAll(sel));
+    if (nodes.length) break;
+  }
+  if (!nodes.length) return out;
+  out.loggedIn = true;
+  const pick = (n, sel) => {
+    const el = n.querySelector(sel);
+    return el ? (el.getAttribute('title') || el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  };
+  const pickText = (n, sel) => {
+    const el = n.querySelector(sel);
+    return el ? (el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  };
+  out.rows = nodes.slice(0, %d).map(n => ({
+    sender: pick(n, '[data-testid="message-column:sender-address"]'),
+    subject: pick(n, '[data-testid="message-column:subject"]'),
+    time: pickText(n, 'time[data-testid="item-date-simple"]'),
+    unread: n.classList.contains('unread'),
+    text: (n.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 300)
+  }));
+  return out;
+})()
+"""
+
+
+class CdpError(Exception):
+    pass
+
+
+class CdpPipe:
+    """DevTools protocol over the inherited pipe fds: NUL-terminated JSON."""
+
+    def __init__(self, cmd_w, rsp_r):
+        self.cmd_w = cmd_w
+        self.rsp_r = rsp_r
+        self.buf = b""
+        self.next_id = 0
+
+    def _pump(self, deadline):
+        """Return the next complete pipe message(s) as raw JSON blobs.
+
+        Returns as soon as at least one complete message is available —
+        waiting for "more data" here would stall every CDP call until the
+        deadline whenever the response is the last thing the browser sends.
+        """
+        out = []
+        while time.time() < deadline:
+            nul = self.buf.find(b"\0")
+            if nul >= 0:
+                out.append(self.buf[:nul])
+                self.buf = self.buf[nul + 1:]
+                return out
+            timeout = max(0.0, deadline - time.time())
+            r, _, _ = select.select([self.rsp_r], [], [], timeout)
+            if not r:
+                break
+            chunk = os.read(self.rsp_r, 65536)
+            if not chunk:
+                raise CdpError("browser closed the pipe")
+            # Cap before accumulating: the peer controls the byte stream.
+            if len(self.buf) + len(chunk) > MAX_PIPE_MSG:
+                raise CdpError("CDP message too large")
+            self.buf += chunk
+        return out
+
+    def call(self, method, params=None, session_id=None, timeout=CDP_TIMEOUT):
+        self.next_id += 1
+        msg_id = self.next_id
+        msg = {"id": msg_id, "method": method, "params": params or {}}
+        if session_id:
+            msg["sessionId"] = session_id
+        try:
+            os.write(self.cmd_w, json.dumps(msg).encode() + b"\0")
+        except OSError as e:
+            raise CdpError("browser pipe write failed: %s" % e)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            for raw in self._pump(deadline):
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if msg.get("id") != msg_id:
+                    continue  # events and other responses: ignore
+                if "error" in msg:
+                    raise CdpError(str(msg["error"]))
+                return msg.get("result", {})
+        raise CdpError("CDP call timed out: " + method)
+
+    def attach(self, target_id):
+        result = self.call("Target.attachToTarget",
+                           {"targetId": target_id, "flatten": True})
+        session = result.get("sessionId")
+        if not session:
+            raise CdpError("attach returned no sessionId")
+        return session
+
+    def detach(self, session_id):
+        try:
+            self.call("Target.detachFromTarget", {"sessionId": session_id})
+        except CdpError:
+            pass
+
+
+def browser_binary():
+    """Mirror omarchy-launch-webapp's browser resolution."""
+    try:
+        desktop = subprocess.run(
+            ["xdg-settings", "get", "default-web-browser"],
+            capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        desktop = ""
+    known = ("google-chrome", "brave", "microsoft-edge", "opera", "vivaldi", "helium")
+    if not desktop.startswith(known):
+        desktop = "chromium.desktop"
+    home = os.path.expanduser("~")
+    for base in (home + "/.local/share/applications",
+                 home + "/.nix-profile/share/applications",
+                 "/usr/share/applications"):
+        try:
+            with open(os.path.join(base, desktop)) as f:
+                for line in f:
+                    if line.startswith("Exec="):
+                        return line[5:].strip().split()[0]
+        except OSError:
+            continue
+    return "chromium"
+
+
+def launch_browser():
+    """Spawn the webapp with CDP on inherited fds 3/4; return (proc, CdpPipe)."""
+    cmd_r, cmd_w = os.pipe()  # broker -> browser (fd 3 in the child)
+    rsp_r, rsp_w = os.pipe()  # browser -> broker (fd 4 in the child)
+    for fd in (cmd_r, cmd_w, rsp_r, rsp_w):
+        os.set_inheritable(fd, True)
+
+    def setup_fds():
+        os.dup2(cmd_r, 3)
+        os.dup2(rsp_w, 4)
+
+    # The child must see the pipe as fds 3/4. preexec_fn's dup2 provides the
+    # mapping, but CPython closes every fd outside pass_fds around the same
+    # step — so 3 and 4 must be in pass_fds too, or the dup2 targets get
+    # closed whenever the pipe ends didn't already land on 3/4 by luck.
+    proc = subprocess.Popen(
+        [browser_binary(),
+         "--app=" + MAIL_URL,
+         "--user-data-dir=" + PROFILE_DIR,
+         "--remote-debugging-pipe"],
+        pass_fds=(cmd_r, cmd_w, rsp_r, rsp_w, 3, 4),
+        preexec_fn=setup_fds,
+        start_new_session=True,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    os.close(cmd_r)
+    os.close(rsp_w)
+    return proc, CdpPipe(cmd_w, rsp_r)
+
+
+def is_proton_url(url):
+    """Exact parsed-hostname allowlist: substrings would trust evil-proton.me."""
+    try:
+        host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return False
+    return any(host == d or host.endswith("." + d) for d in PROTON_DOMAINS)
+
+
+def page_targets(cdp):
+    try:
+        result = cdp.call("Target.getTargets")
+    except CdpError:
+        return None
+    return [t for t in result.get("targetInfos", []) if t.get("type") == "page"]
+
+
+def sweep_external(cdp):
+    """Forward non-Proton page tabs to the default browser and close them."""
+    targets = page_targets(cdp)
+    if targets is None:
+        return
+    for t in targets:
+        url = t.get("url") or ""
+        if not url.startswith(("http://", "https://")):
+            continue
+        if is_proton_url(url):
+            continue
+        subprocess.Popen(["xdg-open", url],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            cdp.call("Target.closeTarget", {"targetId": t["targetId"]})
+        except CdpError:
+            pass
+
+
+def parse_row(row):
+    """Structured fields with an innerText fallback; everything truncated."""
+    sender = (row.get("sender") or "").strip()
+    subject = (row.get("subject") or "").strip()
+    if not (sender or subject):
+        lines = [l.strip() for l in (row.get("text") or "").split("\n") if l.strip()]
+        if lines:
+            subject = " ".join(lines)[:160]
+    return {
+        "sender": sender[:80],
+        "subject": subject[:160],
+        "time": (row.get("time") or "").strip()[:40],
+        "unread": bool(row.get("unread")),
+    }
+
+
+def recent_messages(cdp, limit):
+    empty = {"open": False, "loggedIn": False, "messages": []}
+    targets = page_targets(cdp)
+    if targets is None:
+        return empty
+    target = next((t for t in targets if is_proton_url(t.get("url") or "")), None)
+    if not target:
+        return empty
+    session = None
+    try:
+        session = cdp.attach(target["targetId"])
+        result = cdp.call("Runtime.evaluate", {
+            "expression": EXTRACT_JS % max(0, min(limit, 50)),
+            "returnByValue": True,
+        }, session_id=session)
+    except CdpError:
+        return empty
+    finally:
+        # Always detach: an open session makes the browser stream events on
+        # the pipe, and there is exactly one reader (call itself).
+        if session:
+            cdp.detach(session)
+    value = (result.get("result") or {}).get("value") or {}
+    return {
+        "open": True,
+        "loggedIn": bool(value.get("loggedIn")),
+        "messages": [parse_row(r) for r in (value.get("rows") or [])],
+    }
+
+
+def peercred_uid(conn):
+    creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+    _, uid, _ = struct.unpack("3i", creds)
+    return uid
+
+
+def handle_request(cdp, request):
+    try:
+        req = json.loads(request)
+    except json.JSONDecodeError:
+        return {"error": "invalid json"}
+    method = req.get("method")
+    if method == "recent":
+        try:
+            limit = int(req.get("limit", 7))
+        except (TypeError, ValueError):
+            limit = 7
+        return recent_messages(cdp, limit)
+    if method == "selftest":
+        # Diagnostic: open an external URL so the sweep can be observed live.
+        try:
+            cdp.call("Target.createTarget", {"url": "https://example.org"})
+            return {"ok": True}
+        except CdpError as e:
+            return {"error": str(e)}
+    return {"error": "unknown method"}
+
+
+BROWSER_PROC = None  # set in main(); terminated on cleanup
+
+
+def log(msg):
+    sys.stderr.write("omarchy-protonmail-broker: %s\n" % msg)
+    sys.stderr.flush()
+
+
+def cleanup(signum=None, frame=None):
+    log("saliendo (signum=%r)" % signum)
+    try:
+        os.unlink(SOCK_PATH)
+    except OSError:
+        pass
+    # Never leave an orphaned webapp behind: without the broker its DevTools
+    # pipe leads nowhere and focus-or-launch would keep focusing a window
+    # whose dropdown and link forwarding are silently dead.
+    if BROWSER_PROC is not None and BROWSER_PROC.poll() is None:
+        try:
+            BROWSER_PROC.terminate()
+        except OSError:
+            pass
+    sys.exit(0)
+
+
+def worker(cdp, jobs, stop):
+    """Owns the CDP pipe. Handles queued client jobs one at a time and sweeps
+    external tabs when idle. There is exactly one reader of the pipe (call(),
+    here in the worker), and every request detaches its CDP session right
+    after use, so the browser emits no session events that could fill the
+    pipe. Any pipe EOF sets `stop` so the main thread shuts the broker down."""
+    last_sweep = 0.0
+    while not stop.is_set():
+        try:
+            job = jobs.get(timeout=0.3)
+        except queue.Empty:
+            job = None
+        except (OSError, ValueError):
+            stop.set()
+            return
+        if job is not None:
+            func, result_q = job
+            try:
+                result_q.put(func())
+            except CdpError as e:
+                result_q.put(e)
+            except Exception as e:  # never let a handler kill the worker
+                log("error interno en handler: %r" % e)
+                result_q.put({"error": "internal error"})
+            continue
+        if time.time() - last_sweep >= SWEEP_INTERVAL:
+            last_sweep = time.time()
+            try:
+                sweep_external(cdp)
+            except CdpError as e:
+                log("sweep: %s" % e)
+                stop.set()
+                return
+
+
+def main():
+    os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
+    os.chmod(RUNTIME_DIR, 0o700)
+
+    import fcntl
+    lock_fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("otro broker tiene el candado; saliendo")
+        return 0  # another broker is already running
+
+    signal.signal(signal.SIGTERM, cleanup)
+    signal.signal(signal.SIGINT, cleanup)
+
+    try:
+        os.unlink(SOCK_PATH)
+    except OSError:
+        pass
+    listen = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    listen.bind(SOCK_PATH)
+    os.chmod(SOCK_PATH, 0o600)
+    listen.listen(4)
+    listen.setblocking(False)
+
+    proc, cdp = launch_browser()
+    globals()["BROWSER_PROC"] = proc
+    log("navegador lanzado (pid %d), escuchando en %s" % (proc.pid, SOCK_PATH))
+
+    jobs = queue.Queue()
+    stop = threading.Event()
+    threading.Thread(target=worker, args=(cdp, jobs, stop), daemon=True).start()
+
+    while True:
+        # Browser gone (or the pipe died) -> our work here is done.
+        if proc.poll() is not None:
+            log("el navegador salió (código %r)" % proc.returncode)
+            cleanup()
+        if stop.is_set():
+            log("worker detenido; saliendo")
+            cleanup()
+        try:
+            r, _, _ = select.select([listen], [], [], 1.0)
+        except (OSError, ValueError):
+            cleanup()
+        if not r:
+            continue
+        try:
+            conn, _ = listen.accept()
+        except OSError:
+            continue
+        try:
+            # Per-client authentication: same-uid peers only, and the
+            # API itself stays read-only and narrow.
+            if peercred_uid(conn) != os.geteuid():
+                conn.close()
+                continue
+            conn.settimeout(REQUEST_TIMEOUT)
+            data = b""
+            while b"\n" not in data and len(data) <= MAX_CLIENT_MSG:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            line = data.split(b"\n", 1)[0][:MAX_CLIENT_MSG]
+            # The CDP work runs on the worker thread so a stalled browser
+            # cannot block the accept loop.
+            result_q = queue.Queue()
+            jobs.put((lambda line=line: handle_request(cdp, line), result_q))
+            try:
+                response = result_q.get(timeout=REQUEST_TIMEOUT)
+            except queue.Empty:
+                response = {"error": "timeout"}
+            if isinstance(response, Exception):
+                response = {"error": str(response)}
+            conn.sendall(json.dumps(response, ensure_ascii=False).encode() + b"\n")
+        except OSError as e:
+            log("error de cliente: %r" % e)
+        finally:
+            conn.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

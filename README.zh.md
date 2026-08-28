@@ -23,24 +23,23 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-        │   (DevTools protocol)      (on open / count change)
-        │
-        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► 外部链接在默认浏览器中打开
-            (DevTools protocol)      (webapp 打开期间运行)
+        └─ --remote-debugging-pipe ──► omarchy-protonmail-broker ──► 最近 N 封邮件下拉 +
+            (CDP 通过继承的 fd 3/4，               (唯一的 CDP 客户端，        外部链接在默认浏览器
+             完全没有 TCP 调试端口)                  unix socket API + 扫描)   中打开
 ```
 
 - **未读数量**：Proton Mail 会把它以 `(N)` 的形式放进页面标题，而
   Hyprland 通过 `hyprctl clients -j` 暴露窗口标题。无论是 webapp 窗口
   *还是*任何显示 Proton Mail 的普通浏览器标签页都可以工作。
-- **最近邮件**：安装好的 webapp 运行在独立的浏览器配置中，并带有本地
-  DevTools 端口（`--remote-debugging-port=0`，记录在 `DevToolsActivePort` 中）。插件通过 CDP 直接从页面读取收件箱
-  行 —— 只使用 Python 标准库，无需安装其他任何东西。
-- **外部链接**：在邮件中点击的链接会在默认浏览器（你的主配置，带有
-  cookie 和登录会话）中打开，而不是在 webapp 的独立配置中。
-  `omarchy-protonmail-linkguard` 通过 CDP 监视标签页，用 `xdg-open`
-  打开非 Proton 的标签页并在 webapp 中将其关闭。仅在 Proton Mail
-  打开时运行。
+- **最近邮件**：webapp 通过 `omarchy-protonmail-broker` 以
+  `--remote-debugging-pipe` 启动，浏览器通过从 broker 继承的文件描述符
+  进行 CDP 通信 —— 没有任何 TCP 调试端口（固定或随机都没有）可供其他
+  进程连接。broker 通过 unix socket（SO_PEERCRED 认证）向
+  `omarchy-protonmail-recent` 提供截断后的收件箱行 —— 只使用 Python
+  标准库，无需安装其他任何东西。
+- **外部链接**：broker 还会扫描标签页列表，把主机不在 Proton 精确
+  允许列表中的标签页在默认浏览器（你的主配置，带有 cookie 和登录
+  会话）中打开，并在 webapp 中将其关闭。
 
 ## 安装
 

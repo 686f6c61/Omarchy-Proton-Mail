@@ -32,27 +32,26 @@ título: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notificación
         │   (títulos de ventana)   (cada intervalSec)
         │
-        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► desplegable con los últimos N
-        │   (protocolo DevTools)     (al abrir / cambiar el contador)
-        │
-        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► los enlaces externos se
-            (protocolo DevTools)     (mientras la webapp está abierta)   abren en el navegador por defecto
+        └─ --remote-debugging-pipe ──► omarchy-protonmail-broker ──► desplegable con los
+            (CDP por fds 3/4 heredados,          (único cliente CDP, API    últimos N + enlaces
+             sin puerto TCP de depuración)        unix + barrido de tabs)   externos al navegador por defecto
 ```
 
 - **Número de no leídos**: Proton Mail lo pone en el título de la página como
   `(N)`, y Hyprland expone los títulos de ventana vía `hyprctl clients -j`.
   Funciona con la ventana de la webapp *y* con cualquier pestaña normal del
   navegador que tenga Proton Mail abierto.
-- **Mensajes recientes**: la webapp instalada corre en un perfil de navegador
-  dedicado con un puerto DevTools efímero (`--remote-debugging-port=0`,
-  anotado en `DevToolsActivePort`). El plugin lee las
-  filas de la bandeja directamente de la página por CDP — Python solo con la
-  librería estándar, nada más que instalar.
-- **Enlaces externos**: los enlaces pulsados dentro de un mensaje se abren en
-  el navegador por defecto (tu perfil principal, con cookies y sesiones) en
-  lugar del perfil dedicado de la webapp. `omarchy-protonmail-linkguard`
-  vigila las pestañas vía CDP, abre las que no son de Proton con `xdg-open` y
-  las cierra en la webapp. Solo corre mientras Proton Mail está abierto.
+- **Mensajes recientes**: la webapp se lanza a través de
+  `omarchy-protonmail-broker` con `--remote-debugging-pipe`, así que el
+  navegador habla CDP por descriptores de fichero heredados del broker — no
+  hay puerto TCP de depuración, ni fijo ni aleatorio, al que otros procesos
+  puedan conectarse. El broker sirve las filas de la bandeja (truncadas) por
+  un socket unix (autenticado con SO_PEERCRED) a `omarchy-protonmail-recent`
+  — Python solo con la librería estándar, nada más que instalar.
+- **Enlaces externos**: el propio broker barre la lista de pestañas y abre
+  en el navegador por defecto (tu perfil principal, con cookies y sesiones)
+  cualquier pestaña cuyo host no esté en la lista exacta de dominios de
+  Proton, cerrándola en la webapp.
 
 ## Instalación
 

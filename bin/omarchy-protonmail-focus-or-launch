@@ -1,0 +1,28 @@
+#!/bin/bash
+
+# omarchy-protonmail-focus-or-launch - focus the Proton Mail window (any
+# workspace) or launch the webapp through omarchy-protonmail-broker.
+#
+# The broker owns the browser launch so the DevTools pipe fds stay with a
+# supervisor that exposes only a narrow API - never a TCP debug port.
+#
+# NOTE: the window pattern must not end at "me": the window class continues
+# with "_…-Default", where "_" is a word character, so word-boundary matching
+# on "me" would never hit and every call would spawn a new window.
+
+set -euo pipefail
+
+address=$(hyprctl clients -j | jq -r '
+  [ .[] | select(
+      ((.class // "")        | ascii_downcase | contains("mail.proton")) or
+      ((.initialClass // "") | ascii_downcase | contains("mail.proton"))
+    ) | .address ][0] // ""')
+
+if [[ -n $address ]]; then
+  # Newer Hyprland dispatches focus through the hl.dsp lua form; keep the
+  # legacy focuswindow syntax as a fallback (same as omarchy-launch-or-focus).
+  hyprctl dispatch "hl.dsp.focus({ window = \"address:$address\" })" >/dev/null 2>&1 ||
+    hyprctl dispatch focuswindow "address:$address" >/dev/null
+else
+  setsid "$HOME/.local/share/omarchy-protonmail/omarchy-protonmail-broker" >/dev/null 2>&1 &
+fi

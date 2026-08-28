@@ -31,27 +31,27 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-        │   (DevTools protocol)      (on open / count change)
-        │
-        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► externe Links öffnen im
-            (DevTools protocol)      (solange die Webapp offen ist)      Standard-Browser
+        └─ --remote-debugging-pipe ──► omarchy-protonmail-broker ──► dropdown with last N
+            (CDP über geerbte fds 3/4,            (einziger CDP-Client,    messages + externe Links
+             kein TCP-Debug-Port)                  Unix-Socket-API + Sweep)  an den Standard-Browser
 ```
 
 - **Anzahl ungelesener Mails**: Proton Mail schreibt sie als `(N)` in den
   Seitentitel, und Hyprland stellt Fenstertitel über `hyprctl clients -j`
   bereit. Funktioniert mit dem Webapp-Fenster *und* mit jedem normalen
   Browser-Tab, in dem Proton Mail geöffnet ist.
-- **Neueste Nachrichten**: Die installierte Webapp läuft in einem dedizierten
-  Browser-Profil mit einem ephemeralen DevTools-Port (`--remote-debugging-port=0`,
-  vermerkt in `DevToolsActivePort`). Das
-  Plugin liest die Posteingangszeilen direkt aus der Seite über CDP aus —
-  Python nur mit Standardbibliothek, nichts weiter zu installieren.
-- **Externe Links**: In einer Nachricht angeklickte Links werden im
-  Standard-Browser geöffnet (Hauptprofil mit Cookies und Anmeldungen) statt
-  im dedizierten Profil der Webapp. `omarchy-protonmail-linkguard` überwacht
-  die Tabs über CDP, öffnet Nicht-Proton-Tabs mit `xdg-open` und schließt sie
-  in der Webapp. Läuft nur, solange Proton Mail geöffnet ist.
+- **Neueste Nachrichten**: Die Webapp wird über `omarchy-protonmail-broker`
+  mit `--remote-debugging-pipe` gestartet, sodass der Browser CDP über vom
+  Broker geerbte Dateideskriptoren spricht — es gibt keinen TCP-Debug-Port,
+  weder fest noch zufällig, mit dem sich andere Prozesse verbinden könnten.
+  Der Broker liefert die (gekürzten) Posteingangszeilen über einen
+  Unix-Socket (authentifiziert per SO_PEERCRED) an
+  `omarchy-protonmail-recent` — Python nur mit Standardbibliothek, nichts
+  weiter zu installieren.
+- **Externe Links**: Der Broker durchsucht außerdem die Tab-Liste und öffnet
+  jeden Tab, dessen Host nicht in der exakten Proton-Allowlist steht, im
+  Standard-Browser (Hauptprofil mit Cookies und Anmeldungen) und schließt
+  ihn in der Webapp.
 
 ## Installation
 

@@ -30,25 +30,25 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► dropdown with last N messages
-        │   (DevTools protocol)      (on open / count change)
-        │
-        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► external links open
-            (DevTools protocol)      (while the webapp is open)        in the default browser
+        └─ --remote-debugging-pipe ──► omarchy-protonmail-broker ──► dropdown with last N
+            (CDP over inherited fds 3/4,        (sole CDP client, unix-    messages + external
+             no TCP debug port at all)           socket API + tab sweep)    links to default browser
 ```
 
 - **Unread count**: Proton Mail puts it in the page title as `(N)`, and
   Hyprland exposes window titles via `hyprctl clients -j`. Works with the
   webapp window *and* any regular browser tab showing Proton Mail.
-- **Recent messages**: the installed webapp runs in a dedicated browser
-  profile with an ephemeral DevTools port (`--remote-debugging-port=0`, recorded in `DevToolsActivePort`). The plugin reads the
-  inbox rows straight from the page over CDP — stdlib-only Python, nothing
-  else to install.
-- **External links**: links clicked inside a message are forwarded to the
-  default browser (your main profile, with cookies and logins) instead of
-  opening in the webapp's dedicated profile. `omarchy-protonmail-linkguard`
-  watches the CDP target list, opens any non-Proton tab with `xdg-open` and
-  closes it in the webapp. It runs only while Proton Mail is open.
+- **Recent messages**: the webapp launches through
+  `omarchy-protonmail-broker` with `--remote-debugging-pipe`, so the browser
+  speaks CDP over file descriptors inherited from the broker — there is no
+  TCP debug port, fixed or random, for other processes to attack. The broker
+  serves truncated inbox rows on a unix socket (SO_PEERCRED-authenticated)
+  to `omarchy-protonmail-recent` — stdlib-only Python, nothing else to
+  install.
+- **External links**: the broker also sweeps the tab list and forwards any
+  tab whose host is outside the exact Proton allowlist to the default
+  browser (your main profile, with cookies and logins), closing it in the
+  webapp.
 
 ## Install
 
