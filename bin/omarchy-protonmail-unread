@@ -16,7 +16,7 @@ set -euo pipefail
 if [[ "${1:-}" == "--test" ]]; then
   clients=$(cat)
 else
-  clients=$(hyprctl clients -j)
+  clients=$(timeout 5 hyprctl clients -j)
 fi
 
 jq -c '

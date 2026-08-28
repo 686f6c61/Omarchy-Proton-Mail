@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
 """omarchy-protonmail-recent - list recent Proton Mail messages via CDP.
 
-Talks to the dedicated-profile Proton Mail webapp (launched with
---remote-debugging-port=9229) over the Chrome DevTools Protocol and extracts
-the most recent inbox rows (sender, subject, time, unread) from the DOM.
+Talks to the dedicated-profile Proton Mail webapp over the Chrome DevTools
+Protocol and extracts the most recent inbox rows (sender, subject, time,
+unread) from the DOM. The webapp is launched with --remote-debugging-port=0,
+so Chromium picks a random ephemeral port and records it in the
+DevToolsActivePort file inside the profile directory (0700) — there is no
+fixed, predictable port to attack.
 
 Stdlib only: ships a minimal WebSocket client because CDP evaluate requires
-WS while target discovery is plain HTTP.
+WS while target discovery is plain HTTP. The client only dials exact IPv4/IPv6
+loopback hosts and applies hard frame/message size caps before allocating.
 
 Usage:
-  omarchy-protonmail-recent [--limit N] [--port 9229]
+  omarchy-protonmail-recent [--limit N] [--port P]   # --port overrides discovery (testing)
   omarchy-protonmail-recent --dump          # diagnostic DOM dump for tuning
 
 Output: one JSON line
@@ -25,7 +29,19 @@ import struct
 import sys
 import urllib.request
 
-PORT = 9229
+DATA_DIR = os.path.expanduser("~/.local/share/omarchy-protonmail")
+# Written by Chromium next to the profile when remote debugging is enabled.
+# The profile directory is 0700, so only this user can learn the port.
+DEVTOOLS_PORT_FILE = os.path.join(DATA_DIR, "browser-profile", "DevToolsActivePort")
+
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+# Hard caps, checked before any allocation or accumulation: a malicious or
+# confused peer cannot make us reserve unbounded memory.
+MAX_FRAME_BYTES = 1 << 20   # 1 MiB per WebSocket frame
+MAX_MESSAGE_BYTES = 4 << 20  # 4 MiB per reassembled message
+HTTP_TIMEOUT = 3
+WS_TIMEOUT = 5
+EVAL_TIMEOUT = 8
 
 # JS evaluated in the Proton Mail page. Returns {loggedIn, rows:[...]} with
 # structured fields taken from Proton's data-testid hooks (verified against
@@ -97,11 +113,17 @@ class WsError(Exception):
 class MiniWS:
     """Minimal RFC6455 client: text frames, masking, ping/pong, fragments."""
 
-    def __init__(self, url, timeout=5):
+    def __init__(self, url, timeout=WS_TIMEOUT):
         assert url.startswith("ws://")
         rest = url[5:]
         hostport, _, path = rest.partition("/")
         host, _, port = hostport.partition(":")
+        # Only ever dial exact loopback: the ws URL comes from the local CDP
+        # endpoint, but never trust it blindly.
+        if host not in LOOPBACK_HOSTS:
+            raise WsError("refusing non-loopback WebSocket host: " + host)
+        if not (0 < int(port or 80) < 65536):
+            raise WsError("invalid port")
         self.sock = socket.create_connection((host, int(port or 80)), timeout=timeout)
         self.sock.settimeout(timeout)
         key = base64.b64encode(os.urandom(16)).decode()
@@ -167,6 +189,9 @@ class MiniWS:
                 length = struct.unpack(">H", self._recv_exact(2))[0]
             elif length == 127:
                 length = struct.unpack(">Q", self._recv_exact(8))[0]
+            # Cap before allocating: the length field is attacker-controlled.
+            if length > MAX_FRAME_BYTES:
+                raise WsError("frame too large")
             mask = self._recv_exact(4) if masked else None
             payload = bytearray(self._recv_exact(length))
             if mask:
@@ -178,6 +203,8 @@ class MiniWS:
             if opcode == 0x8:
                 raise WsError("closed by peer")
             parts.append(bytes(payload))
+            if sum(len(p) for p in parts) > MAX_MESSAGE_BYTES:
+                raise WsError("message too large")
             if fin:
                 return b"".join(parts).decode(errors="replace")
 
@@ -188,7 +215,7 @@ class MiniWS:
             pass
 
 
-def cdp_evaluate(ws_url, expression, timeout=8):
+def cdp_evaluate(ws_url, expression, timeout=EVAL_TIMEOUT):
     ws = MiniWS(ws_url, timeout=timeout)
     try:
         ws.send_text(json.dumps({
@@ -204,9 +231,24 @@ def cdp_evaluate(ws_url, expression, timeout=8):
         ws.close()
 
 
+def discover_port():
+    """Ephemeral CDP port chosen by Chromium (--remote-debugging-port=0),
+    read from the DevToolsActivePort file inside the 0700 profile dir."""
+    try:
+        with open(DEVTOOLS_PORT_FILE) as f:
+            port = int(f.readline().strip())
+        if 0 < port < 65536:
+            return port
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def find_page_target(port):
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json", timeout=3) as r:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/json", timeout=HTTP_TIMEOUT
+        ) as r:
             targets = json.load(r)
     except (OSError, json.JSONDecodeError):
         return None
@@ -244,13 +286,19 @@ def main():
     args = sys.argv[1:]
     dump = "--dump" in args
     limit = 7
-    port = PORT
     if "--limit" in args:
         limit = int(args[args.index("--limit") + 1])
+    # --port overrides discovery for testing against other instances.
+    port = None
     if "--port" in args:
         port = int(args[args.index("--port") + 1])
+    if port is None:
+        port = discover_port()
 
     empty = {"open": False, "loggedIn": False, "messages": []}
+    if port is None:
+        print(json.dumps(empty))
+        return 0
     target = find_page_target(port)
     if not target:
         print(json.dumps(empty))

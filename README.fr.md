@@ -32,10 +32,10 @@ titre : « (3) Inbox | … | Proton Mail »
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (titres de fenêtres)     (toutes les intervalSec)
         │
-        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► menu déroulant avec les N derniers messages
+        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► menu déroulant avec les N derniers messages
         │   (protocole DevTools)        (à l'ouverture / changement du compteur)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► les liens externes s'ouvrent
+        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► les liens externes s'ouvrent
             (protocole DevTools)        (pendant que la webapp est ouverte)  dans le navigateur par défaut
 ```
 
@@ -44,7 +44,8 @@ titre : « (3) Inbox | … | Proton Mail »
   -j`. Fonctionne avec la fenêtre de la webapp *et* avec tout onglet classique
   du navigateur affichant Proton Mail.
 - **Messages récents** : la webapp installée tourne dans un profil de
-  navigateur dédié avec un port DevTools local (`127.0.0.1:9229`). Le plugin
+  navigateur dédié avec un port DevTools éphémère (`--remote-debugging-port=0`,
+  consigné dans `DevToolsActivePort`). Le plugin
   lit les lignes de la boîte de réception directement dans la page via CDP —
   Python avec la seule bibliothèque standard, rien d'autre à installer.
 - **Liens externes** : les liens cliqués dans un message s'ouvrent dans le

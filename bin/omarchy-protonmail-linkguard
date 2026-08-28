@@ -3,44 +3,76 @@
 # omarchy-protonmail-linkguard - open external links in the default browser
 #
 # The Proton Mail webapp runs on a dedicated browser profile
-# (--user-data-dir + --remote-debugging-port=9229), so links clicked inside a
+# (--user-data-dir + --remote-debugging-port=0), so links clicked inside a
 # message would open in that profile — without the cookies and logins of the
 # user's main browser. This guard polls the CDP target list and, for every
-# page tab whose URL is not Proton's, opens the URL with the default browser
-# (xdg-open) and closes the tab in the webapp.
+# page tab whose URL host is not in the exact Proton allowlist, opens the URL
+# with the default browser (xdg-open) and closes the tab in the webapp.
 #
-# A single instance runs at a time (flock). The guard exits when the CDP port
-# stops answering (webapp closed); the bar widget respawns it when Proton Mail
-# is open again.
+# The CDP port is ephemeral (chosen by Chromium) and read from the
+# DevToolsActivePort file inside the profile directory (0700), so there is no
+# fixed, predictable port. A single instance runs at a time (flock). The guard
+# exits when the CDP endpoint stops answering (webapp closed); the bar widget
+# respawns it when Proton Mail is open again.
 
 set -uo pipefail
 
-PORT="${1:-9229}"
+DATA_DIR="$HOME/.local/share/omarchy-protonmail"
+PORT_FILE="$DATA_DIR/browser-profile/DevToolsActivePort"
 LOCK="${XDG_RUNTIME_DIR:-/tmp}/omarchy-protonmail-linkguard.lock"
 
 exec 9>"$LOCK"
 flock -n 9 || exit 0
 
+# Ephemeral CDP port chosen by Chromium, or empty if unavailable.
+read_port() {
+  local p
+  p=$(head -n 1 "$PORT_FILE" 2>/dev/null) || return 1
+  [[ $p =~ ^[0-9]+$ ]] && ((p > 0 && p < 65536)) || return 1
+  echo "$p"
+}
+
+# Exact-hostname allowlist: substring matching would trust evil-proton.me.
+is_proton_host() {
+  local url=$1 rest hostport host
+  rest=${url#*://}       # strip scheme
+  hostport=${rest%%/*}   # authority component
+  hostport=${hostport##*@}  # strip any userinfo
+  host=${hostport%%:*}   # strip port
+  host=${host,,}         # lowercase
+  [[ -n $host ]] || return 1
+  case "$host" in
+    proton.me | *.proton.me | protonmail.com | *.protonmail.com | protonvpn.com | *.protonvpn.com)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 fails=0
 while true; do
-  targets=$(curl -fsS --max-time 2 "http://127.0.0.1:$PORT/json" 2>/dev/null) || {
+  port=$(read_port) || port=""
+  targets=""
+  if [[ -n $port ]]; then
+    targets=$(curl -fsS --max-time 2 "http://127.0.0.1:$port/json" 2>/dev/null) || targets=""
+  fi
+  if [[ -z $targets ]]; then
     fails=$((fails + 1))
-    # CDP down three times in a row -> webapp closed, exit.
+    # Endpoint down three times in a row -> webapp closed, exit.
     ((fails >= 3)) && exit 0
     sleep 1
     continue
-  }
+  fi
   fails=0
 
   while IFS=$'\t' read -r id url; do
-    [[ -z "$id" ]] && continue
+    [[ -z $id ]] && continue
+    is_proton_host "$url" && continue
     xdg-open "$url" >/dev/null 2>&1 &
-    curl -fsS --max-time 2 "http://127.0.0.1:$PORT/json/close/$id" >/dev/null 2>&1 || true
+    curl -fsS --max-time 2 "http://127.0.0.1:$port/json/close/$id" >/dev/null 2>&1 || true
   done < <(jq -r '
     .[] | select(.type == "page")
       | select((.url // "") | test("^https?://"))
-      | select((.url | ascii_downcase
-                 | contains("proton.me") or contains("protonmail") or contains("protonvpn")) | not)
       | "\(.id)\t\(.url)"' <<<"$targets")
 
   sleep 0.7

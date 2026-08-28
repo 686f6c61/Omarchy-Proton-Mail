@@ -34,36 +34,21 @@ case "$LANGUAGE" in
   *) echo "Invalid --language '$LANGUAGE' (expected: en es fr de it zh)" >&2; exit 1 ;;
 esac
 
-# --- 1. Icon -----------------------------------------------------------------
+# --- 1. Icons -----------------------------------------------------------------
+# Reviewed assets vendored in the repo (no install-time downloads of mutable
+# remote content). The SVG is a single static path; the PNG is 128x128.
 mkdir -p "$DATA_DIR"
-if [[ ! -s "$ICON_PATH" ]]; then
-  echo "Downloading Proton Mail icon..."
-  # mail.proton.me serves its SPA shell for icon paths, so use Google's
-  # favicon service first and Proton's own .ico (48px) as a fallback.
-  curl -fsSL --max-time 10 -o "$ICON_PATH" "https://www.google.com/s2/favicons?domain=proton.me&sz=128" || {
-    curl -fsSL --max-time 10 -o "$ICON_PATH.ico" "https://proton.me/favicon.ico" &&
-      magick "$ICON_PATH.ico" "$ICON_PATH" && rm -f "$ICON_PATH.ico"
-  }
-  if ! file -b --mime-type "$ICON_PATH" | grep -q '^image/'; then
-    rm -f "$ICON_PATH"
-    echo "Error: could not download a valid Proton Mail icon." >&2
-    exit 1
-  fi
-fi
-
-if [[ ! -s "$SVG_ICON_PATH" ]]; then
-  echo "Downloading Proton Mail logo (SVG)..."
-  # Decorative only: if the download fails the widget just hides the image.
-  curl -fsSL --max-time 10 -o "$SVG_ICON_PATH" "https://cdn.simpleicons.org/protonmail/6D4AFF" ||
-    rm -f "$SVG_ICON_PATH"
-fi
+install -m 644 "$PROJECT_DIR/assets/proton-mail.png" "$ICON_PATH"
+install -m 644 "$PROJECT_DIR/assets/proton-mail.svg" "$SVG_ICON_PATH"
 
 # --- 2. Webapp launcher -------------------------------------------------------
-# Dedicated browser profile + CDP port so the recent-messages dropdown can
-# read the inbox via the DevTools protocol without touching the user's main
-# browser profile.
-CUSTOM_EXEC="omarchy-launch-webapp https://mail.proton.me --user-data-dir=$DATA_DIR/browser-profile --remote-debugging-port=9229"
-if [[ -f "$DESKTOP_FILE" ]] && grep -qF -- "--remote-debugging-port=9229" "$DESKTOP_FILE"; then
+# Dedicated browser profile + ephemeral CDP port (--remote-debugging-port=0:
+# Chromium picks a random free port and records it in DevToolsActivePort
+# inside the 0700 profile dir) so the recent-messages dropdown can read the
+# inbox via the DevTools protocol without touching the user's main browser
+# profile — and without a fixed, predictable debug port.
+CUSTOM_EXEC="omarchy-launch-webapp https://mail.proton.me --user-data-dir=$DATA_DIR/browser-profile --remote-debugging-port=0"
+if [[ -f "$DESKTOP_FILE" ]] && grep -qF -- "--remote-debugging-port=0" "$DESKTOP_FILE"; then
   echo "Webapp 'Proton Mail' already up to date, skipping."
 else
   echo "Creating 'Proton Mail' webapp (dedicated profile + CDP)..."

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-08-28
+
+Security hardening after the Omarchy marketplace review.
+
+### Security
+
+- No more fixed, unauthenticated DevTools port: the webapp now launches with
+  `--remote-debugging-port=0`, so Chromium picks a random ephemeral port that
+  helpers discover through the `DevToolsActivePort` file inside the
+  0700-permission profile directory.
+- WebSocket client hardened: exact loopback hosts only, and hard caps on
+  frame (1 MiB) and reassembled message (4 MiB) sizes, enforced before any
+  allocation or accumulation.
+- Mailbox sender/subject/time text forced to `Text.PlainText` in the dropdown
+  so crafted messages can never be parsed as rich text.
+- Installer no longer downloads mutable remote assets: the Proton Mail PNG
+  and SVG ship vendored (and reviewed) in the repo under `assets/`.
+- External-link guard now allowlists exact parsed hostnames
+  (`proton.me`, `protonmail.com`, `protonvpn.com` and their subdomains)
+  instead of substring matching, and helper processes run with timeouts and
+  intrinsically bounded output.
+
 ## [1.1.0] - 2026-08-28
 
 ### Added
@@ -68,5 +90,6 @@ UI, or inline in `~/.config/omarchy/shell.json`:
   live in a single dictionary in `Panel.qml`, easy to extend.
 - Documentation (`README`) available in all six languages.
 
+[1.1.1]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.1
 [1.1.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.0
 [1.0.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.0.0

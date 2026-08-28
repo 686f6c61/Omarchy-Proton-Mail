@@ -157,8 +157,10 @@ Panel {
     if (recentCount > 0 && mailOpen && !recentProc.running) recentProc.running = true
   }
 
-  // Launch flags that keep the webapp on its dedicated profile with the CDP
-  // port — without them a re-launch would open a window in the user's main
+  // Launch flags that keep the webapp on its dedicated profile with an
+  // ephemeral CDP port (--remote-debugging-port=0: Chromium picks a random
+  // free port and records it in DevToolsActivePort inside the 0700 profile
+  // dir) — without them a re-launch would open a window in the user's main
   // browser profile and the recent-messages dropdown would go blind.
   // NOTE: the window pattern must not end at "me": omarchy-launch-or-focus
   // wraps it in \b…\b and the window class continues with "_…-Default", where
@@ -166,7 +168,7 @@ Panel {
   // would spawn a new window.
   readonly property string mailPattern: "mail.proton"
   readonly property string mailUrl: "https://mail.proton.me"
-  readonly property string mailFlags: "--user-data-dir=" + Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/browser-profile --remote-debugging-port=9229"
+  readonly property string mailFlags: "--user-data-dir=" + Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/browser-profile --remote-debugging-port=0"
   // Proton Mail logo shown before the dropdown header; installed by install.sh.
   readonly property string mailIconPath: Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/proton-mail.svg"
 
@@ -216,7 +218,7 @@ Panel {
         root.unreadText(n),
         "--exec", "omarchy-launch-or-focus-webapp", root.mailPattern, root.mailUrl,
         "--user-data-dir=" + Quickshell.env("HOME") + "/.local/share/omarchy-protonmail/browser-profile",
-        "--remote-debugging-port=9229"])
+        "--remote-debugging-port=0"])
     }
     root.haveSample = true
   }
@@ -373,6 +375,9 @@ Panel {
                 text: (modelData.time ? modelData.time + " · " : "")
                   + (modelData.sender || "—")
                   + " — " + (modelData.subject || root.t("noSubject"))
+                // Mailbox content is attacker-controlled: never let it be
+                // parsed as rich text (inline resource loads).
+                textFormat: Text.PlainText
                 color: root.foreground
                 opacity: modelData.unread ? 1 : 0.75
                 font.family: root.fontFamily

@@ -30,10 +30,10 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
+        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► dropdown with last N messages
         │   (DevTools protocol)      (on open / count change)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► external links open
+        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► external links open
             (DevTools protocol)      (while the webapp is open)        in the default browser
 ```
 
@@ -41,7 +41,7 @@ title: "(3) Inbox | … | Proton Mail"
   Hyprland exposes window titles via `hyprctl clients -j`. Works with the
   webapp window *and* any regular browser tab showing Proton Mail.
 - **Recent messages**: the installed webapp runs in a dedicated browser
-  profile with a local DevTools port (`127.0.0.1:9229`). The plugin reads the
+  profile with an ephemeral DevTools port (`--remote-debugging-port=0`, recorded in `DevToolsActivePort`). The plugin reads the
   inbox rows straight from the page over CDP — stdlib-only Python, nothing
   else to install.
 - **External links**: links clicked inside a message are forwarded to the

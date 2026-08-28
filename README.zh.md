@@ -23,10 +23,10 @@ title: "(3) Inbox | … | Proton Mail"
         ├─ hyprctl clients -j ──► omarchy-protonmail-unread ──► badge 󰇮 N + notification
         │   (window titles)          (every intervalSec)
         │
-        ├─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-recent ──► dropdown with last N messages
+        ├─ CDP (ephemeral) ──► omarchy-protonmail-recent ──► dropdown with last N messages
         │   (DevTools protocol)      (on open / count change)
         │
-        └─ CDP (127.0.0.1:9229) ──► omarchy-protonmail-linkguard ──► 外部链接在默认浏览器中打开
+        └─ CDP (ephemeral) ──► omarchy-protonmail-linkguard ──► 外部链接在默认浏览器中打开
             (DevTools protocol)      (webapp 打开期间运行)
 ```
 
@@ -34,7 +34,7 @@ title: "(3) Inbox | … | Proton Mail"
   Hyprland 通过 `hyprctl clients -j` 暴露窗口标题。无论是 webapp 窗口
   *还是*任何显示 Proton Mail 的普通浏览器标签页都可以工作。
 - **最近邮件**：安装好的 webapp 运行在独立的浏览器配置中，并带有本地
-  DevTools 端口（`127.0.0.1:9229`）。插件通过 CDP 直接从页面读取收件箱
+  DevTools 端口（`--remote-debugging-port=0`，记录在 `DevToolsActivePort` 中）。插件通过 CDP 直接从页面读取收件箱
   行 —— 只使用 Python 标准库，无需安装其他任何东西。
 - **外部链接**：在邮件中点击的链接会在默认浏览器（你的主配置，带有
   cookie 和登录会话）中打开，而不是在 webapp 的独立配置中。
