@@ -16,7 +16,9 @@ set -euo pipefail
 if [[ "${1:-}" == "--test" ]]; then
   clients=$(cat)
 else
-  clients=$(timeout 5 hyprctl clients -j)
+  # Deadline AND producer-side byte ceiling: never materialize unbounded
+  # hyprctl output before jq sees it.
+  clients=$(timeout 5 hyprctl clients -j | head -c 262144)
 fi
 
 jq -c '

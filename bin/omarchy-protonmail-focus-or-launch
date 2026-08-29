@@ -12,7 +12,8 @@
 
 set -euo pipefail
 
-address=$(hyprctl clients -j | jq -r '
+# Deadline AND producer-side byte ceiling on the window list.
+address=$(timeout 5 hyprctl clients -j | head -c 262144 | jq -r '
   [ .[] | select(
       ((.class // "")        | ascii_downcase | contains("mail.proton")) or
       ((.initialClass // "") | ascii_downcase | contains("mail.proton"))

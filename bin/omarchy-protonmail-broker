@@ -7,22 +7,36 @@ descriptors 3/4 inherited from this process. There is NO TCP debug port -
 fixed or random - so no other process (even running as the same user) can
 reach the authenticated mailbox session.
 
-The broker exposes a narrowly scoped local API on a unix socket
+The broker exposes a narrowly scoped, read-only API on a unix socket
 ($XDG_RUNTIME_DIR/omarchy-protonmail/broker.sock, newline-delimited JSON):
 
   {"method": "recent", "limit": N}  -> truncated recent-message metadata
-  {"method": "selftest"}            -> opens https://example.org so the
-                                       external-tab sweep can be observed
 
-Clients are authenticated with SO_PEERCRED (peer uid must equal the broker's
-euid). The API cannot execute JavaScript or read anything beyond the truncated
-metadata above; the dangerous capability (CDP) never leaves this process.
+Client authorization, in layers:
+  - SO_PEERCRED: peer uid must equal the broker's euid.
+  - /proc/<pid>/exe must be the Python interpreter and /proc/<pid>/cmdline
+    must invoke exactly this plugin's installed client script.
 
-The broker also sweeps the target list ~1.4s and forwards any page tab whose
-host is outside the exact Proton allowlist to the default browser (xdg-open),
-closing it in the webapp (replaces the old linkguard).
+Residual same-uid exposure, stated honestly: SO_PEERCRED plus the peer
+process checks are NOT a cryptographic boundary. A determined process running
+under the same desktop uid can still craft a connection that looks like the
+intended client (argv is self-controlled) and read the last N truncated
+message rows (sender, subject, time, unread — no bodies, no session). That is
+inherent to the Linux same-uid desktop model; what this design removes is the
+dangerous part — JavaScript execution, session cookies and full mailbox
+access never leave this process, because the only CDP channel is a pair of
+inherited pipe fds with no endpoint to connect to.
 
-Stdlib only. Exits when the browser dies or on SIGTERM, removing the socket.
+The broker refuses to start without a trusted per-user XDG_RUNTIME_DIR, and
+creates/opens its subdirectory, lock and socket relative to a validated
+directory descriptor without following symlinks.
+
+The broker sweeps the target list ~1.4s and forwards any page tab whose host
+is outside the exact Proton allowlist to the default browser (xdg-open),
+closing it in the webapp.
+
+Stdlib only. Exits when the browser dies or on SIGTERM, removing the socket
+and terminating the browser.
 """
 
 import json
@@ -31,6 +45,7 @@ import queue
 import select
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -40,9 +55,11 @@ import urllib.parse
 
 DATA_DIR = os.path.expanduser("~/.local/share/omarchy-protonmail")
 PROFILE_DIR = os.path.join(DATA_DIR, "browser-profile")
-RUNTIME_DIR = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "omarchy-protonmail")
-SOCK_PATH = os.path.join(RUNTIME_DIR, "broker.sock")
-LOCK_PATH = os.path.join(RUNTIME_DIR, "broker.lock")
+# Resolved at startup by validate_runtime_dir(); never a /tmp fallback.
+RUNTIME_DIR = None
+SOCK_NAME = "broker.sock"
+LOCK_NAME = "broker.lock"
+CLIENT_SCRIPT = os.path.join(DATA_DIR, "omarchy-protonmail-recent")
 
 MAIL_URL = "https://mail.proton.me"
 PROTON_DOMAINS = ("proton.me", "protonmail.com", "protonvpn.com")
@@ -310,10 +327,33 @@ def recent_messages(cdp, limit):
     }
 
 
-def peercred_uid(conn):
+def peercred(conn):
     creds = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-    _, uid, _ = struct.unpack("3i", creds)
-    return uid
+    pid, uid, _ = struct.unpack("3i", creds)
+    return pid, uid
+
+
+def authorize_peer(conn):
+    """Layered same-uid client check: peer uid must match ours AND the peer
+    process must be the Python interpreter running exactly this plugin's
+    installed client script. Not a cryptographic boundary — see the module
+    docstring for the honest residual exposure."""
+    try:
+        pid, uid = peercred(conn)
+    except OSError:
+        return False
+    if uid != os.geteuid():
+        return False
+    try:
+        exe = os.readlink("/proc/%d/exe" % pid)
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            argv = [a for a in f.read(4096).split(b"\0") if a]
+    except OSError:
+        return False  # process vanished between accept and inspection
+    if os.path.realpath(exe) != os.path.realpath(sys.executable or "python3"):
+        return False
+    # argv[0] is the interpreter; argv[1] must be our exact installed client.
+    return len(argv) >= 2 and argv[1].decode(errors="replace") == CLIENT_SCRIPT
 
 
 def handle_request(cdp, request):
@@ -328,17 +368,11 @@ def handle_request(cdp, request):
         except (TypeError, ValueError):
             limit = 7
         return recent_messages(cdp, limit)
-    if method == "selftest":
-        # Diagnostic: open an external URL so the sweep can be observed live.
-        try:
-            cdp.call("Target.createTarget", {"url": "https://example.org"})
-            return {"ok": True}
-        except CdpError as e:
-            return {"error": str(e)}
     return {"error": "unknown method"}
 
 
 BROWSER_PROC = None  # set in main(); terminated on cleanup
+RUNTIME_FD = None    # validated runtime subdirectory descriptor
 
 
 def log(msg):
@@ -348,10 +382,11 @@ def log(msg):
 
 def cleanup(signum=None, frame=None):
     log("saliendo (signum=%r)" % signum)
-    try:
-        os.unlink(SOCK_PATH)
-    except OSError:
-        pass
+    if RUNTIME_FD is not None:
+        try:
+            os.unlink(SOCK_NAME, dir_fd=RUNTIME_FD)
+        except OSError:
+            pass
     # Never leave an orphaned webapp behind: without the broker its DevTools
     # pipe leads nowhere and focus-or-launch would keep focusing a window
     # whose dropdown and link forwarding are silently dead.
@@ -398,12 +433,48 @@ def worker(cdp, jobs, stop):
                 return
 
 
-def main():
-    os.makedirs(RUNTIME_DIR, mode=0o700, exist_ok=True)
-    os.chmod(RUNTIME_DIR, 0o700)
+def validate_runtime_dir():
+    """Open the per-user runtime subdirectory through validated descriptors.
 
+    Refuses to start without a trusted XDG_RUNTIME_DIR (never falls back to
+    /tmp), and creates/opens the broker subdirectory relative to a directory
+    file descriptor with O_NOFOLLOW, so a planted symlink cannot redirect the
+    lock or socket elsewhere. Returns the subdirectory's fd.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        raise SystemExit("omarchy-protonmail-broker: XDG_RUNTIME_DIR no definido; me niego a usar un fallback predecible")
+    try:
+        root_fd = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise SystemExit("omarchy-protonmail-broker: no puedo abrir XDG_RUNTIME_DIR: %s" % e)
+    st = os.fstat(root_fd)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or (st.st_mode & 0o777) != 0o700:
+        os.close(root_fd)
+        raise SystemExit("omarchy-protonmail-broker: XDG_RUNTIME_DIR no es un directorio 0700 del usuario")
+    try:
+        os.mkdir("omarchy-protonmail", 0o700, dir_fd=root_fd)
+    except FileExistsError:
+        pass
+    dir_fd = os.open("omarchy-protonmail",
+                     os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
+    st = os.fstat(dir_fd)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        raise SystemExit("omarchy-protonmail-broker: el subdirectorio runtime no es de confianza")
+    os.fchmod(dir_fd, 0o700)
+    os.close(root_fd)
+    return dir_fd
+
+
+def main():
     import fcntl
-    lock_fd = os.open(LOCK_PATH, os.O_RDWR | os.O_CREAT, 0o600)
+
+    global RUNTIME_DIR
+    dir_fd = validate_runtime_dir()
+    RUNTIME_DIR = "/proc/self/fd/%d" % dir_fd
+    globals()["RUNTIME_FD"] = dir_fd
+
+    lock_fd = os.open(LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600, dir_fd=dir_fd)
     try:
         fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
@@ -414,18 +485,20 @@ def main():
     signal.signal(signal.SIGINT, cleanup)
 
     try:
-        os.unlink(SOCK_PATH)
+        os.unlink(SOCK_NAME, dir_fd=dir_fd)
     except OSError:
         pass
     listen = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    listen.bind(SOCK_PATH)
-    os.chmod(SOCK_PATH, 0o600)
+    # Bind through the validated descriptor so the socket can never land
+    # outside the trusted runtime subdirectory.
+    listen.bind(os.path.join(RUNTIME_DIR, SOCK_NAME))
+    os.chmod(os.path.join(RUNTIME_DIR, SOCK_NAME), 0o600)
     listen.listen(4)
     listen.setblocking(False)
 
     proc, cdp = launch_browser()
     globals()["BROWSER_PROC"] = proc
-    log("navegador lanzado (pid %d), escuchando en %s" % (proc.pid, SOCK_PATH))
+    log("navegador lanzado (pid %d), escuchando en %s" % (proc.pid, os.path.join(RUNTIME_DIR, SOCK_NAME)))
 
     jobs = queue.Queue()
     stop = threading.Event()
@@ -452,7 +525,7 @@ def main():
         try:
             # Per-client authentication: same-uid peers only, and the
             # API itself stays read-only and narrow.
-            if peercred_uid(conn) != os.geteuid():
+            if not authorize_peer(conn):
                 conn.close()
                 continue
             conn.settimeout(REQUEST_TIMEOUT)

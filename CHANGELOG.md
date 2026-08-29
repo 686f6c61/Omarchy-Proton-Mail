@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.4] - 2026-08-28
+
+Third marketplace review round: hardening of the broker's local boundary.
+
+### Security
+
+- Broker API is now read-only (`recent` only; the `selftest` diagnostic was
+  removed) and client authorization goes beyond `SO_PEERCRED`: the peer
+  process must be the Python interpreter running exactly this plugin's
+  installed client script. The broker docstring states the residual same-uid
+  exposure honestly (truncated metadata of the last N messages; no bodies,
+  no session, no JS execution).
+- The broker refuses to start without a trusted per-user `XDG_RUNTIME_DIR`
+  (no `/tmp` fallback) and creates/opens its subdirectory, lock and socket
+  relative to a validated directory descriptor with `O_NOFOLLOW`.
+- `hyprctl clients -j` output is capped at 256 KiB on the producer side (and
+  time-bounded) in both `omarchy-protonmail-unread` and
+  `omarchy-protonmail-focus-or-launch`.
+- `omarchy-protonmail-recent` caps broker replies at 64 KiB and normalizes
+  the exact schema, record count and field lengths before QML parses them.
+
 ## [1.1.2] - 2026-08-28
 
 Rework of the DevTools access after the second marketplace review round: a
@@ -118,6 +139,7 @@ UI, or inline in `~/.config/omarchy/shell.json`:
   live in a single dictionary in `Panel.qml`, easy to extend.
 - Documentation (`README`) available in all six languages.
 
+[1.1.4]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.4
 [1.1.2]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.2
 [1.1.1]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.1
 [1.1.0]: https://github.com/686f6c61/Omarchy-Proton-Mail/releases/tag/v1.1.0

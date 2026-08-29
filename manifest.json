@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "686f6c61.proton-mail",
   "name": "Proton Mail",
-  "version": "1.1.2",
+  "version": "1.1.4",
   "author": "686f6c61",
   "description": "Unread Proton Mail count in the bar, recent-mail dropdown and desktop notifications",
   "kinds": [

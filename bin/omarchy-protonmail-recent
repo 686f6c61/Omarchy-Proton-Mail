@@ -23,9 +23,33 @@ SOCK_PATH = os.path.join(
     os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
     "omarchy-protonmail", "broker.sock")
 
-MAX_RESPONSE = 4 << 20  # cap before accumulating the broker's reply
+MAX_RESPONSE = 64 << 10  # 64 KiB cap before accumulating the broker's reply
+MAX_MESSAGES = 20        # hard record ceiling before QML ever sees the data
 
 EMPTY = {"open": False, "loggedIn": False, "messages": []}
+
+# Exact output schema: QML never touches un-normalized broker content.
+FIELD_LIMITS = {"sender": 80, "subject": 160, "time": 40}
+
+
+def normalize(parsed):
+    if not isinstance(parsed, dict):
+        return EMPTY
+    messages = []
+    for row in (parsed.get("messages") or [])[:MAX_MESSAGES]:
+        if not isinstance(row, dict):
+            continue
+        messages.append({
+            "sender": str(row.get("sender") or "")[:FIELD_LIMITS["sender"]],
+            "subject": str(row.get("subject") or "")[:FIELD_LIMITS["subject"]],
+            "time": str(row.get("time") or "")[:FIELD_LIMITS["time"]],
+            "unread": bool(row.get("unread")),
+        })
+    return {
+        "open": bool(parsed.get("open")),
+        "loggedIn": bool(parsed.get("loggedIn")),
+        "messages": messages,
+    }
 
 
 def main():
@@ -51,14 +75,8 @@ def main():
                 break
             data += chunk
         sock.close()
-        line = data.split(b"\n", 1)[0]
-        parsed = json.loads(line)
-        # Never relay anything unexpected from the socket.
-        print(json.dumps({
-            "open": bool(parsed.get("open")),
-            "loggedIn": bool(parsed.get("loggedIn")),
-            "messages": parsed.get("messages") or [],
-        }, ensure_ascii=False))
+        line = data.split(b"\n", 1)[0][:MAX_RESPONSE]
+        print(json.dumps(normalize(json.loads(line)), ensure_ascii=False))
     except (OSError, json.JSONDecodeError, AttributeError):
         print(json.dumps(EMPTY))
     return 0
