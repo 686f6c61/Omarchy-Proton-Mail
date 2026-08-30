@@ -17,14 +17,63 @@ Output: one JSON line
 import json
 import os
 import socket
+import stat
 import sys
 
-SOCK_PATH = os.path.join(
-    os.environ.get("XDG_RUNTIME_DIR") or "/tmp",
-    "omarchy-protonmail", "broker.sock")
+SOCK_DIR = "omarchy-protonmail"
+SOCK_NAME = "broker.sock"
 
 MAX_RESPONSE = 64 << 10  # 64 KiB cap before accumulating the broker's reply
 MAX_MESSAGES = 20        # hard record ceiling before QML ever sees the data
+
+
+def broker_connect_path():
+    """Return the path used to connect to the broker socket, refusing any
+    predictable fallback. Mirrors the broker's trust rules: without
+    XDG_RUNTIME_DIR there is no trusted per-user runtime directory, and a
+    predictable path under a world-writable directory would let a different
+    local user pre-create it and serve arbitrary JSON (cross-uid attack).
+    The path is resolved relative to a directory descriptor opened with
+    O_NOFOLLOW, after validating ownership, directory mode, socket type and
+    socket ownership. The returned path points at the descriptor itself
+    (/proc/self/fd/N/...), so nothing on disk is re-resolved on connect.
+    """
+    runtime = os.environ.get("XDG_RUNTIME_DIR")
+    if not runtime:
+        raise SystemExit(
+            "omarchy-protonmail-recent: XDG_RUNTIME_DIR no definido; "
+            "me niego a usar un fallback predecible")
+    try:
+        root_fd = os.open(runtime, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise SystemExit(
+            "omarchy-protonmail-recent: no puedo abrir XDG_RUNTIME_DIR: %s" % e)
+    try:
+        st = os.fstat(root_fd)
+        if st.st_uid != os.geteuid() or (st.st_mode & 0o777) != 0o700:
+            raise SystemExit(
+                "omarchy-protonmail-recent: XDG_RUNTIME_DIR no es un "
+                "directorio 0700 de este usuario")
+        sub_fd = os.open(SOCK_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                         dir_fd=root_fd)
+    except OSError as e:
+        raise SystemExit(
+            "omarchy-protonmail-recent: el broker no esta en ejecucion: %s" % e)
+    try:
+        st = os.fstat(sub_fd)
+        if st.st_uid != os.geteuid() or (st.st_mode & 0o777) != 0o700:
+            raise SystemExit(
+                "omarchy-protonmail-recent: el subdirectorio del broker no es "
+                "0700 de este usuario")
+        st = os.stat(SOCK_NAME, dir_fd=sub_fd, follow_symlinks=False)
+        if not stat.S_ISSOCK(st.st_mode) or st.st_uid != os.geteuid():
+            raise SystemExit(
+                "omarchy-protonmail-recent: broker.sock no es un socket de "
+                "este usuario")
+        return "/proc/self/fd/%d/%s" % (sub_fd, SOCK_NAME)
+    except OSError as e:
+        raise SystemExit(
+            "omarchy-protonmail-recent: el broker no esta en ejecucion: %s" % e)
 
 EMPTY = {"open": False, "loggedIn": False, "messages": []}
 
@@ -66,7 +115,7 @@ def main():
         # The broker answers from a worker thread; the browser may legitimately
         # take several seconds under load, so be patient.
         sock.settimeout(15)
-        sock.connect(SOCK_PATH)
+        sock.connect(broker_connect_path())
         sock.sendall(json.dumps({"method": "recent", "limit": limit}).encode() + b"\n")
         data = b""
         while b"\n" not in data and len(data) <= MAX_RESPONSE:

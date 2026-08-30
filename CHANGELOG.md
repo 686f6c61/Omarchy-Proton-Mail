@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.5] - 2026-08-30
+
+Fourth marketplace review round: cross-uid path in the client and an honest
+authorization boundary.
+
+### Security
+
+- `omarchy-protonmail-recent` no longer falls back to `/tmp` when
+  `XDG_RUNTIME_DIR` is unset: it refuses to run (exit 1), mirroring the
+  broker. The predictable runtime path under a world-writable directory —
+  where a different local user could pre-create the directory and serve
+  arbitrary JSON — is gone from both halves of the pair, not just one.
+- `omarchy-protonmail-recent` now connects to the broker socket the same way
+  the broker creates it: relative to a directory descriptor opened with
+  `O_NOFOLLOW`, after validating ownership and `0700` mode of
+  `XDG_RUNTIME_DIR` and the broker subdirectory, and the socket type and
+  ownership (stat with `follow_symlinks=False`). The connect path is
+  `/proc/self/fd/<dirfd>/broker.sock`, so nothing on disk is re-resolved at
+  connect time.
+- `omarchy-protonmail-broker`: the `/proc/<pid>/exe` + `argv[1]` peer
+  checks were removed. They were not an authorization boundary — any
+  same-uid process can execute the real client script and satisfy them by
+  construction — and they introduced a pid-reuse window between `accept()`
+  and the `/proc` reads. The boundary is now stated as what it is:
+  `SO_PEERCRED` (peer uid equals the broker's euid), captured atomically at
+  accept time, over a `0600` socket inside a `0700` per-user runtime
+  directory. Every same-uid process is inside that boundary by
+  construction (it can ptrace the broker and reach its CDP pipe fds), so no
+  handshake can exclude it; the API therefore grants nothing beyond
+  same-uid reach — read-only `recent`, size- and row-capped replies, and
+  every dangerous capability (JavaScript execution, session cookies, full
+  mailbox access) stays inside the broker process. The broker and client
+  docstrings state this residual explicitly.
+
 ## [1.1.4] - 2026-08-28
 
 Third marketplace review round: hardening of the broker's local boundary.

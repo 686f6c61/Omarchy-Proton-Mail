@@ -12,20 +12,19 @@ The broker exposes a narrowly scoped, read-only API on a unix socket
 
   {"method": "recent", "limit": N}  -> truncated recent-message metadata
 
-Client authorization, in layers:
-  - SO_PEERCRED: peer uid must equal the broker's euid.
-  - /proc/<pid>/exe must be the Python interpreter and /proc/<pid>/cmdline
-    must invoke exactly this plugin's installed client script.
-
-Residual same-uid exposure, stated honestly: SO_PEERCRED plus the peer
-process checks are NOT a cryptographic boundary. A determined process running
-under the same desktop uid can still craft a connection that looks like the
-intended client (argv is self-controlled) and read the last N truncated
-message rows (sender, subject, time, unread — no bodies, no session). That is
-inherent to the Linux same-uid desktop model; what this design removes is the
-dangerous part — JavaScript execution, session cookies and full mailbox
-access never leave this process, because the only CDP channel is a pair of
-inherited pipe fds with no endpoint to connect to.
+Client authorization: SO_PEERCRED, captured atomically at accept() time —
+the peer uid must equal the broker's euid. That is the whole boundary and it
+is stated honestly. The trust boundary is the Unix user: the socket lives in
+a 0700 per-user runtime directory, and every process running as the same
+desktop uid is inside the boundary by construction (it can already ptrace
+this broker, read its memory and reach its CDP pipe fds), so no per-client
+handshake — argv matching, executable paths, on-disk tokens — can exclude it;
+such layers only add false confidence and TOCTOU windows. What the API must
+never do is grant a capability beyond same-uid reach, and it does not: it is
+read-only, replies are size- and row-capped, and the dangerous capabilities
+— JavaScript execution, session cookies, full mailbox access — never leave
+this process, because the only CDP channel is a pair of inherited pipe fds
+with no endpoint to connect to.
 
 The broker refuses to start without a trusted per-user XDG_RUNTIME_DIR, and
 creates/opens its subdirectory, lock and socket relative to a validated
@@ -59,7 +58,6 @@ PROFILE_DIR = os.path.join(DATA_DIR, "browser-profile")
 RUNTIME_DIR = None
 SOCK_NAME = "broker.sock"
 LOCK_NAME = "broker.lock"
-CLIENT_SCRIPT = os.path.join(DATA_DIR, "omarchy-protonmail-recent")
 
 MAIL_URL = "https://mail.proton.me"
 PROTON_DOMAINS = ("proton.me", "protonmail.com", "protonvpn.com")
@@ -334,26 +332,26 @@ def peercred(conn):
 
 
 def authorize_peer(conn):
-    """Layered same-uid client check: peer uid must match ours AND the peer
-    process must be the Python interpreter running exactly this plugin's
-    installed client script. Not a cryptographic boundary — see the module
-    docstring for the honest residual exposure."""
+    """Single same-uid check via SO_PEERCRED, captured atomically at accept()
+    time: no /proc inspection and therefore no pid-reuse window.
+
+    The trust boundary is the Unix user, full stop. The socket lives inside
+    a 0700 per-user runtime directory owned by this euid and the peer uid
+    must equal the broker's euid. Every process running as the same desktop
+    uid is INSIDE that boundary by construction — it can already ptrace this
+    broker, read its memory and inherit/reach its CDP pipe fds — so no
+    handshake (argv matching, executable paths, tokens on disk) can exclude
+    it, and pretending otherwise only adds false confidence and TOCTOU
+    windows. What this API must never do is grant a capability beyond
+    same-uid reach, and it does not: it is read-only, replies are size- and
+    row-capped, and every dangerous capability (JavaScript execution,
+    session cookies, full mailbox access) stays inside this process.
+    See the module docstring for the same statement."""
     try:
-        pid, uid = peercred(conn)
+        _, uid = peercred(conn)
     except OSError:
         return False
-    if uid != os.geteuid():
-        return False
-    try:
-        exe = os.readlink("/proc/%d/exe" % pid)
-        with open("/proc/%d/cmdline" % pid, "rb") as f:
-            argv = [a for a in f.read(4096).split(b"\0") if a]
-    except OSError:
-        return False  # process vanished between accept and inspection
-    if os.path.realpath(exe) != os.path.realpath(sys.executable or "python3"):
-        return False
-    # argv[0] is the interpreter; argv[1] must be our exact installed client.
-    return len(argv) >= 2 and argv[1].decode(errors="replace") == CLIENT_SCRIPT
+    return uid == os.geteuid()
 
 
 def handle_request(cdp, request):
